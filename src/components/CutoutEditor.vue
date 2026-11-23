@@ -354,6 +354,49 @@ function boxPrompt() {
   return { x: x / frame.width, y: y / frame.height, right: (x + width) / frame.width, bottom: (y + height) / frame.height }
 }
 
+// A guia fornece exemplos do objeto e do fundo ao MobileSAM.
+// O centro é uma indicação positiva; os cantos da caixa da guia são
+// indicações negativas, desde que não coincidam com pontos do usuário.
+// A guia continua sendo o limite máximo aplicado em maskInsideGuide().
+function guidePrompts(box, userPrompts) {
+  if (!box || !validContour.value) return userPrompts
+
+  const generated = []
+  const cx = (box.x + box.right) / 2
+  const cy = (box.y + box.bottom) / 2
+  const width = box.right - box.x
+  const height = box.bottom - box.y
+
+  // Respeita o ponto Manter escolhido manualmente, quando existir.
+  if (!userPrompts.some((point) => point.type === 'positive')) {
+    generated.push({ x: cx, y: cy, type: 'positive' })
+  }
+
+  // Os cantos costumam representar fundo quando a guia envolve um objeto.
+  // Recuamos 3% para evitar pontos exatamente na borda da imagem.
+  const insetX = width * 0.03
+  const insetY = height * 0.03
+  const corners = [
+    [box.x + insetX, box.y + insetY],
+    [box.right - insetX, box.y + insetY],
+    [box.right - insetX, box.bottom - insetY],
+    [box.x + insetX, box.bottom - insetY],
+  ]
+
+  for (const [x, y] of corners) {
+    const nearUserPoint = userPrompts.some((point) =>
+      Math.hypot((point.x - x) / Math.max(width, 0.001),
+        (point.y - y) / Math.max(height, 0.001)) < 0.12)
+    if (!nearUserPoint && Math.hypot((x - cx) / width, (y - cy) / height) > 0.3) {
+      generated.push({ x, y, type: 'negative' })
+    }
+  }
+
+  // Os pontos do usuário vêm por último, para preservar o índice da
+  // correção mais recente utilizado pelo worker.
+  return [...generated, ...userPrompts].slice(-16)
+}
+
 function reportProgress(progress) {
   const messages = {
     download: 'Carregando o modelo local…', encode: 'Analisando a fotografia…',
@@ -462,7 +505,7 @@ function applyResult(result, task) {
 async function infer(label) {
   if (!validSelection.value || (busy.value && !running) || pointers.size) return
   const box = boxPrompt()
-  requested = { points: prompts.value, undo: promptUndo.value, box, guide: validContour.value ? points.value.map(({ x, y }) => ({ x, y })) : null, label, key: JSON.stringify([box, prompts.value]) }
+  requested = { points: prompts.value, predictPoints: guidePrompts(box, prompts.value), undo: promptUndo.value, box, guide: validContour.value ? points.value.map(({ x, y }) => ({ x, y })) : null, label, key: JSON.stringify([box, guidePrompts(box, prompts.value)]) }
   if (running) return
   running = true
   busy.value = 'Preparando a IA local…'
@@ -474,7 +517,7 @@ async function infer(label) {
       try {
         segmenter ??= createMobileSam(image)
         const result = maskSnapshots.get(task.key) ??
-          await segmenter.predict(task.points, task.box, reportProgress, task.label && accepted?.result)
+          await segmenter.predict(task.predictPoints, task.box, reportProgress, task.label && accepted?.result)
         if (!disposed && !requested) applyResult(result, task)
       } catch (error) {
         if (error.name === 'AbortError' || disposed || requested) continue
