@@ -412,6 +412,109 @@ test('um toque Manter sem guia seleciona a almofada inteira em tela móvel', asy
   }
 })
 
+test('Remover por toque exclui o vime com zoom e deslocamento e preserva os três peixes', async ({ browser, baseURL }) => {
+  test.setTimeout(120_000)
+  const context = await browser.newContext({ baseURL, viewport: { width: 360, height: 800 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2 })
+  try {
+    const page = await context.newPage()
+    await page.goto('/')
+    await page.getByRole('button', { name: 'Nova montagem', exact: true }).click()
+    await upload(page, await imageFile(page, 'background'))
+    const canvas = await addObject(page, {
+      name: 'Almofada dos três peixes.jpeg', mimeType: 'image/jpeg',
+      buffer: await readFile(new URL('../test-fixtures/almofada-peixes.jpeg', import.meta.url)),
+    }, false)
+    const dimensions = [900, 1600]
+    await touchGesture(page, [[imagePoint(await canvas.boundingBox(), 450, 950, ...dimensions)]])
+    await page.getByRole('button', { name: 'Remover fundo' }).click()
+    await expect(page.getByText(/Recorte por IA ·/)).toBeVisible({ timeout: 85_000 })
+    await page.getByRole('button', { name: 'Fundo sólido' }).click()
+    await page.getByLabel('Zoom da fotografia').fill('1.15')
+    await page.getByRole('button', { name: 'Mover foto' }).click()
+    const rect = await canvas.boundingBox()
+    const center = imagePoint(rect, 450, 800, ...dimensions)
+    await touchGesture(page, [[center], [{ x: center.x - 10, y: center.y - 12 }]])
+    const point = (x, y) => imagePoint(rect, x, y, ...dimensions, 1.15, -10, -12)
+    const matte = [38, 55, 69, 255]
+    const wicker = point(760, 1340)
+    const product = [[619, 726], [490, 866], [601, 1054], [430, 1220]].map(([x, y]) => point(x, y))
+    for (const sample of [...product, wicker]) await expect.poll(() => pixelAt(canvas, sample)).not.toEqual(matte)
+    const colors = await Promise.all(product.map((sample) => pixelAt(canvas, sample)))
+    await page.getByRole('button', { name: 'Remover', exact: true }).click()
+    await touchGesture(page, [[wicker]])
+    await expect(page.getByText('Recorte atualizado.', { exact: true })).toBeVisible({ timeout: 25_000 })
+    await page.getByRole('button', { name: 'Apagar', exact: true }).click()
+    await expect.poll(() => pixelAt(canvas, wicker)).toEqual(matte)
+    expect(await Promise.all(product.map((sample) => pixelAt(canvas, sample)))).toEqual(colors)
+  } finally {
+    await context.close()
+  }
+})
+
+test('Remover tenta de novo com os mesmos pontos e verifica o alfa após Restaurar', async ({ page }) => {
+  await page.addInitScript(() => {
+    const BrowserWorker = window.Worker
+    window.removalRequests = []
+    window.Worker = class {
+      constructor(url, options) {
+        if (!String(url).includes('mobileSam.worker')) return new BrowserWorker(url, options)
+      }
+
+      postMessage({ request, bitmap, points, previous, negativePass }) {
+        bitmap?.close()
+        window.removalRequests.push({ points, negativePass, hasPrevious: Boolean(previous) })
+        const side = 256
+        const logits = new Float32Array(side * side).fill(-4)
+        for (let y = 40; y < 160; y++) {
+          for (let x = 50; x < 205; x++) {
+            const distant = negativePass === 'with-mask' && x < 55 && y < 45
+            const touched = negativePass === 'without-mask' && x >= 195 && y >= 148
+            if (!distant && !touched) logits[y * side + x] = 4
+          }
+        }
+        const region = { x: 0, y: 0, width: 1, height: 1 }
+        const candidate = { region, imageSize: { width: 1024, height: 819 }, side, logits, raw: logits, correctionSatisfied: true }
+        const metrics = { region, backend: 'wasm', assets: [] }
+        const result = negativePass
+          ? { ...metrics, usesPrevious: negativePass === 'with-mask', candidates: [candidate] }
+          : { ...metrics, ...candidate }
+        queueMicrotask(() => this.onmessage({ data: { request, result } }))
+      }
+
+      terminate() {}
+    }
+  })
+  await page.goto('/')
+  await page.getByRole('button', { name: 'Nova montagem', exact: true }).click()
+  await upload(page, await imageFile(page, 'background'))
+  const canvas = await addObject(page, await imageFile(page, 'object'), false)
+  const center = imagePoint(await canvas.boundingBox(), 150, 120)
+  const matte = [38, 55, 69, 255]
+  await page.mouse.click(center.x, center.y)
+  await page.getByRole('button', { name: 'Remover fundo' }).click()
+  await expect(page.getByText(/Recorte por IA ·/)).toBeVisible()
+  await page.getByRole('button', { name: 'Fundo sólido' }).click()
+  const residue = imagePoint(await canvas.boundingBox(), 233, 181)
+  await page.getByRole('button', { name: 'Restaurar', exact: true }).click()
+  await page.mouse.click(residue.x, residue.y)
+  await page.getByRole('button', { name: 'Remover', exact: true }).click()
+  await page.mouse.click(residue.x, residue.y)
+  await expect(page.getByText(/A IA não conseguiu excluir essa área/)).toBeVisible()
+  await expect(page.getByText('Recorte atualizado.', { exact: true })).toHaveCount(0)
+  const requests = await page.evaluate(() => window.removalRequests)
+  expect(requests.slice(1).map(({ negativePass }) => negativePass)).toEqual(['with-mask', 'without-mask'])
+  expect(requests[1].points).toEqual(requests[2].points)
+  expect(requests[2].points.map(({ type }) => type)).toEqual(['positive', 'negative'])
+  await page.getByRole('button', { name: 'Apagar', exact: true }).click()
+  expect(await pixelAt(canvas, residue)).not.toEqual(matte)
+  await page.getByRole('button', { name: 'Desfazer pincelada' }).click()
+  await page.getByRole('button', { name: 'Remover', exact: true }).click()
+  await page.mouse.click(residue.x, residue.y)
+  await expect(page.getByText('Recorte atualizado.', { exact: true })).toBeVisible()
+  await page.getByRole('button', { name: 'Apagar', exact: true }).click()
+  await expect.poll(() => pixelAt(canvas, residue)).toEqual(matte)
+})
+
 test('aceitação da almofada dos três peixes preserva o tecido e deixa a palha transparente', async ({ page }, testInfo) => {
   const photo = new URL('../test-fixtures/almofada-peixes.jpeg', import.meta.url)
   test.skip(!existsSync(photo), 'Foto original de aceitação ausente.')
@@ -441,14 +544,15 @@ test('aceitação da almofada dos três peixes preserva o tecido e deixa a palha
   await expect.poll(() => pixelAt(canvas, wicker)).toEqual([38, 55, 69, 255])
   await testInfo.attach('Recorte após um toque Remover', { body: await canvas.screenshot(), contentType: 'image/png' })
   const fish = imagePoint(await canvas.boundingBox(), 601, 1054, ...dimensions)
+  const fishColor = await pixelAt(canvas, fish)
   await page.getByRole('button', { name: 'Remover', exact: true }).click()
   await page.mouse.click(fish.x, fish.y)
-  await expect(page.getByText('Recorte atualizado.', { exact: true })).toBeVisible({ timeout: 25_000 })
+  await expect(page.getByText(/A IA não conseguiu excluir essa área/)).toBeVisible({ timeout: 25_000 })
   await page.getByRole('button', { name: 'Apagar', exact: true }).click()
-  await expect.poll(() => pixelAt(canvas, fish)).toEqual([38, 55, 69, 255])
+  await expect.poll(() => pixelAt(canvas, fish)).toEqual(fishColor)
   await page.getByRole('button', { name: 'Manter', exact: true }).click()
   await page.mouse.click(fish.x, fish.y)
-  await expect(page.getByText('Recorte atualizado.', { exact: true })).toBeVisible({ timeout: 25_000 })
+  await expect(page.getByText(/Recorte atualizado\.|Essa área já está como indicada\./)).toBeVisible({ timeout: 25_000 })
   await page.mouse.click(fish.x, fish.y)
   await expect(page.getByText(/Já existe uma indicação igual aqui/)).toBeVisible()
   await page.getByRole('button', { name: 'Apagar', exact: true }).click()

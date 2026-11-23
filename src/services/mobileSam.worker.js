@@ -118,23 +118,30 @@ async function encode({ request, bitmap, box, points, fullImage }) {
     encoder = undefined
   } finally { tensor.dispose() }
 }
-async function predict({ request, points: rawPoints, box: rawBox, previous, refining }) {
+async function predict({ request, points: rawPoints, box: rawBox, previous, refining, negativePass }) {
   publish(request, { progress: { step: 'decode' } })
   const { points, box } = relativePrompts(rawPoints, guideBox(rawPoints, rawBox), region)
   const { coordinates, labels } = modelPrompts(points, box, imageSize)
   const coords = new ort.Tensor('float32', coordinates, [1, labels.length, 2])
   const types = new ort.Tensor('float32', labels, [1, labels.length])
-  const prior = new ort.Tensor('float32', previous?.raw ?? new Float32Array(256 * 256), [1, 1, 256, 256])
-  const present = new ort.Tensor('float32', Float32Array.of(previous ? 1 : 0), [1])
+  const usesPrevious = Boolean(previous && negativePass !== 'without-mask')
+  const prior = new ort.Tensor('float32', usesPrevious ? previous.raw : new Float32Array(256 * 256), [1, 1, 256, 256])
+  const present = new ort.Tensor('float32', Float32Array.of(usesPrevious ? 1 : 0), [1])
   const correction = refining && containsPrompt(region, rawPoints.at(-1) ?? { x: -1, y: -1 })
   const feeds = { image_embeddings: embedding, point_coords: coords, point_labels: types, mask_input: prior, has_mask_input: present }
-  async function candidate() {
+  async function candidate(negativeCandidates) {
     const result = await decoder.run(feeds)
     try {
       const side = result.masks.dims.at(-1)
       const diagnostics = []
       const selection = selectMask(result.masks.data, result.scores.data, side, points, box, imageSize,
-        previous?.logits, correction, correction ? points.length - 1 : undefined, diagnostics)
+        previous?.logits, correction, correction ? points.length - 1 : undefined, diagnostics, negativeCandidates)
+      if (negativeCandidates) {
+        return negativeCandidates.map(({ logits, raw, score, candidate }) => ({
+          logits, raw: raw.slice(), score, side, selectedCandidate: candidate, correctionSatisfied: true,
+          region, imageSize,
+        }))
+      }
       return { ...selection, side, diagnostics }
     } catch (error) {
       if (error.message !== NO_OBJECT) throw error
@@ -142,6 +149,13 @@ async function predict({ request, points: rawPoints, box: rawBox, previous, refi
   }
   try {
     const start = performance.now()
+    if (negativePass) {
+      const candidates = await candidate([]) ?? []
+      const result = { region, usesPrevious, candidates, assets, backend, startupMs, encodingMs,
+        decodingMs: Math.round(performance.now() - start) }
+      self.postMessage({ request, result }, candidates.flatMap(({ logits, raw }) => [logits.buffer, raw.buffer]))
+      return
+    }
     let selection = await candidate()
     if (previous && !selection?.correctionSatisfied) {
       present.data[0] = 0

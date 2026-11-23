@@ -185,7 +185,7 @@ function protectInterior(mask, side, width, height, indices, points, previous) {
 
 export function selectMask(
   logits, scores, side, points, box, size,
-  previous, correction, latest, diagnostics,
+  previous, correction, latest, diagnostics, negativeCandidates,
 ) {
   const length = side * side
   const validWidth = Math.ceil(size.width * side / SAM_SIZE)
@@ -282,6 +282,7 @@ export function selectMask(
     })
 
     const selection = { logits: mask, raw, score, correctionSatisfied, candidate }
+    if (negativeCandidates && correction && correctionSatisfied && !penalty) negativeCandidates.push(selection)
     if (prefersMask(selection, best)) best = selection
   }
 

@@ -5,7 +5,7 @@ import { Check, Eraser, Hand, Lasso, Minus, Paintbrush, Plus, Redo2, RotateCcw, 
 import { useCanvasViewport } from '../composables/useCanvasViewport.js'
 import { useMaskHistory } from '../composables/useMaskHistory.js'
 import { context2d, createCanvas, decodeImage, releaseImage } from '../services/images.js'
-import { contourMask, contourPath, contourRegion, drawMasked, finishMask, modelMask, savedMask } from '../services/masks.js'
+import { compareRemoval, contourMask, contourPath, contourRegion, drawMasked, finishMask, modelMask, savedMask } from '../services/masks.js'
 import { createMobileSam, verifyAiCache } from '../services/mobileSam.js'
 import { updatePrompt } from '../services/mobileSamGeometry.js'
 import { clamp, contain, pointerPair, pointerPosition } from '../utils/geometry.js'
@@ -372,7 +372,9 @@ function applyResult(result, task) {
   }
 
   history.setBase(() => modelMask(frame, result), phase.value !== 'mask')
-  if (task.label && accepted) {
+  if (task.label === 'negative' && accepted) {
+    feedback.value = 'Recorte atualizado.'
+  } else if (task.label && accepted) {
     const before = accepted.result
     const sameRegion = ['x', 'y', 'width', 'height'].every((key) => result.region[key] === before.region[key])
     const changed = !sameRegion || result.logits.some((value, index) => (value > 0) !== (before.logits[index] > 0))
@@ -391,6 +393,35 @@ function applyResult(result, task) {
   markMask()
 }
 
+async function refineRemoval(task, previous) {
+  const predict = (pass) => segmenter.predict(task.points, task.box, reportProgress, previous, pass)
+  const comparison = compareRemoval(image, frame, history.mask, task.points.at(-1), previous)
+  try {
+    let response = await predict('with-mask')
+    while (!disposed && !requested) {
+      const { candidates, usesPrevious, ...metrics } = response
+      let best
+      for (const candidate of candidates) {
+        const mask = history.renderBase(() => modelMask(frame, candidate))
+        try {
+          const score = comparison.score(mask)
+          if (score && (!best || score.localChange > best.score.localChange ||
+            (score.localChange === best.score.localChange && score.outsideChange < best.score.outsideChange))) {
+            best = { candidate, score }
+          }
+        } finally {
+          releaseImage(mask.canvas)
+        }
+      }
+      if (best) return { ...metrics, ...best.candidate }
+      if (!usesPrevious) return
+      response = await predict('without-mask')
+    }
+  } finally {
+    comparison.dispose()
+  }
+}
+
 async function infer(label) {
   if (!validSelection.value || (busy.value && !running) || pointers.size) return
   const box = boxPrompt()
@@ -405,9 +436,19 @@ async function infer(label) {
       requested = undefined
       try {
         segmenter ??= createMobileSam(image)
-        const result = maskSnapshots.get(task.key) ??
-          await segmenter.predict(task.points, task.box, reportProgress, task.label && accepted?.result)
-        if (!disposed && !requested) applyResult(result, task)
+        const removal = task.label === 'negative' && accepted
+        const result = removal
+          ? await refineRemoval(task, accepted.result)
+          : maskSnapshots.get(task.key) ?? await segmenter.predict(task.points, task.box, reportProgress, task.label && accepted?.result)
+        if (disposed || requested) continue
+        if (result) applyResult(result, task)
+        else if (removal) {
+          prompts.value = accepted.points
+          promptUndo.value = accepted.undo
+          showOriginal.value = false
+          feedback.value = 'A IA não conseguiu excluir essa área. O recorte anterior foi mantido.'
+          markMask()
+        }
       } catch (error) {
         if (error.name === 'AbortError' || disposed || requested) continue
         if (accepted) {

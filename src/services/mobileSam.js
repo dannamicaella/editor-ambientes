@@ -61,7 +61,7 @@ export function createMobileSam(image, preferred = 'wasm') {
     }
   }
 
-  async function attempt(points, box, progress, previous) {
+  async function attempt(points, box, progress, previous, negativePass) {
     let bitmap
     try {
       if (!initialized) bitmap = await createImageBitmap(image)
@@ -75,7 +75,7 @@ export function createMobileSam(image, preferred = 'wasm') {
             .every((key) => previous.region[key] === region[key])
           const feedback = sameRegion ? { raw: previous.raw, logits: previous.logits } : undefined
           worker.postMessage({
-            request: ++request, points, box, bitmap, base, provider, fullImage, previous: feedback, refining: !!previous,
+            request: ++request, points, box, bitmap, base, provider, fullImage, previous: feedback, refining: !!previous, negativePass,
           }, bitmap ? [bitmap] : [])
           bitmap = undefined
         } catch (error) {
@@ -87,7 +87,7 @@ export function createMobileSam(image, preferred = 'wasm') {
     }
   }
 
-  async function predict(points, box, progress = () => {}, previous) {
+  async function predict(points, box, progress = () => {}, previous, negativePass) {
     if (closed) throw new DOMException('Segmentação cancelada.', 'AbortError')
     const prompts = points.map(({ x, y, type }) => ({ x, y, type }))
     if (region && prompts.some((point) => point.type === 'positive' && !containsPrompt(region, point))) {
@@ -95,7 +95,7 @@ export function createMobileSam(image, preferred = 'wasm') {
       terminate()
     }
     try {
-      return await attempt(prompts, box, progress, previous)
+      return await attempt(prompts, box, progress, previous, negativePass)
     } catch (error) {
       if (closed || error.message.startsWith('O modelo não encontrou')) throw error
       if (preferred === 'auto' && provider === 'webgpu') {
@@ -103,7 +103,7 @@ export function createMobileSam(image, preferred = 'wasm') {
         provider = 'wasm'
         progress({ step: 'fallback' })
         try {
-          return await attempt(prompts, box, progress, previous)
+          return await attempt(prompts, box, progress, previous, negativePass)
         } catch (fallbackError) {
           terminate()
           throw fallbackError

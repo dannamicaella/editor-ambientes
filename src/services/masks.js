@@ -1,5 +1,6 @@
 import { context2d, createCanvas, decodeImage, encodeCanvas, releaseImage } from './images.js'
-import { samAlpha } from './mobileSamGeometry.js'
+import { SAM_SIZE, samAlpha } from './mobileSamGeometry.js'
+import { fitSize } from '../utils/geometry.js'
 
 export function contourPath(context, points) {
   context.beginPath()
@@ -128,6 +129,62 @@ export function drawMasked(context, image, mask, frame, box) {
   context.globalCompositeOperation = 'source-in'
   context.drawImage(image, box.x, box.y, box.width, box.height)
   context.restore()
+}
+
+export function removalWindow(point, size, { region, imageSize, side }) {
+  // Sample the footprint of two decoder cells around the tap, in photo coordinates.
+  const radius = (length, fraction, resized) => Math.max(3, Math.ceil(2 * length * fraction * SAM_SIZE / (side * resized)))
+  return {
+    x: Math.min(size.width - 1, Math.floor(point.x * size.width)),
+    y: Math.min(size.height - 1, Math.floor(point.y * size.height)),
+    rx: radius(size.width, region.width, imageSize.width),
+    ry: radius(size.height, region.height, imageSize.height),
+  }
+}
+
+export function scoreRemoval(before, after, { width }, { x, y, rx, ry }) {
+  let total = 0
+  let local = 0
+  let localChange = 0
+  let loss = 0
+  let outsideChange = 0
+  for (let i = 3; i < before.length; i += 4) {
+    const pixel = (i - 3) / 4
+    const delta = before[i] - after[i]
+    total += before[i]
+    loss += Math.max(0, delta)
+    if (Math.abs(pixel % width - x) <= rx && Math.abs(Math.floor(pixel / width) - y) <= ry) {
+      local += before[i]
+      localChange += delta
+    } else outsideChange += Math.abs(delta)
+  }
+  const center = (y * width + x) * 4 + 3
+  // Require a visible local gain and keep a strict budget for alterations to the silhouette.
+  if (localChange < Math.max(255, local * 0.2) || (before[center] >= 128 && after[center] >= 128)) return
+  if (loss > total * 0.05 || outsideChange > total * 0.05) return
+  return { localChange, outsideChange }
+}
+
+export function compareRemoval(image, frame, current, point, previous) {
+  const size = fitSize(frame.width, frame.height, SAM_SIZE)
+  const window = removalWindow(point, size, previous)
+  const canvas = createCanvas(size.width, size.height)
+  try {
+    const context = context2d(canvas, { willReadFrequently: true })
+    const box = { x: 0, y: 0, ...size }
+    function renderedAlpha(mask) {
+      drawMasked(context, image, mask, frame, box)
+      return context.getImageData(0, 0, size.width, size.height).data
+    }
+    const before = renderedAlpha(current)
+    return {
+      score: (mask) => scoreRemoval(before, renderedAlpha(mask), size, window),
+      dispose: () => releaseImage(canvas),
+    }
+  } catch (error) {
+    releaseImage(canvas)
+    throw error
+  }
 }
 
 function alphaBounds(canvas) {

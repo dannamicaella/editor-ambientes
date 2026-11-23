@@ -2,6 +2,41 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { bestMask, guideBox, guidedRegion, modelPrompts, prefersMask, relativePrompts, resizedImage, samAlpha, samLogitAt, selectMask, unpadLogits, updatePrompt } from '../src/services/mobileSamGeometry.js'
 import { rasterizeContour } from '../src/utils/contour.js'
+import { scoreRemoval } from '../src/services/masks.js'
+
+test('Remover exige redução de alfa perto do toque e rejeita perda extensa ou distante', () => {
+  const size = { width: 40, height: 40 }
+  const before = new Uint8ClampedArray(40 * 40 * 4).fill(255)
+  const at = (x, y) => (y * size.width + x) * 4 + 3
+  const window = { x: 32, y: 32, rx: 2, ry: 2 }
+  const remote = before.slice()
+  remote[at(0, 0)] = 0
+  assert.equal(scoreRemoval(before, remote, size, window), undefined)
+  const reduced = before.slice()
+  for (let y = 30; y < 35; y++) for (let x = 30; x < 35; x++) reduced[at(x, y)] = 0
+  assert.deepEqual(scoreRemoval(before, reduced, size, window), { localChange: 25 * 255, outsideChange: 0 })
+  reduced[at(32, 32)] = 255
+  assert.equal(scoreRemoval(before, reduced, size, window), undefined, 'o toque segue opaco após Restaurar')
+  reduced[at(32, 32)] = 0
+  for (let i = 0; i < 100; i++) reduced[i * 4 + 3] = 0
+  assert.equal(scoreRemoval(before, reduced, size, window), undefined, 'uma remoção local não justifica perder o objeto')
+})
+
+test('a revisão de Remover só recebe candidatas que respeitam Manter e Remover', () => {
+  const side = 16
+  const area = side * side
+  const logits = new Float32Array(3 * area).fill(-4)
+  for (let y = 4; y < 12; y++) for (let x = 4; x < 12; x++) {
+    logits[y * side + x] = 4
+    if (x < 10) logits[area + y * side + x] = 4
+    if (x < 7) logits[2 * area + y * side + x] = 4
+  }
+  const points = [{ x: 8.5 / side, y: 7.5 / side, type: 'positive' }, { x: 11.5 / side, y: 7.5 / side, type: 'negative' }]
+  const candidates = []
+  selectMask(logits, [0.99, 0.75, 0.98], side, points, undefined, { width: 1024, height: 1024 },
+    logits.subarray(0, area), true, 1, undefined, candidates)
+  assert.deepEqual(candidates.map(({ candidate }) => candidate), [1])
+})
 
 test('fecha o contorno manual irregular e preserva uma concavidade externa', () => {
   const points = [{x: 18, y: 17}, {x: 108, y: 17}, {x: 108, y: 83}, {x: 63, y: 59}, {x: 18, y: 83}]

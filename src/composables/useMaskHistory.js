@@ -17,14 +17,19 @@ export function useMaskHistory(frame) {
     stroke.points.forEach((point, index) => strokeMask(mask, frame, stroke, stroke.points[index - 1], point))
   }
 
-  function setBase(factory, reset = false) {
+  function renderBase(factory, replay = true) {
     const next = factory()
     try {
-      if (!reset) for (const stroke of done) paint(next, stroke)
+      if (replay) for (const stroke of done) paint(next, stroke)
     } catch (error) {
       releaseImage(next.canvas)
       throw error
     }
+    return next
+  }
+
+  function setBase(factory, reset = false) {
+    const next = renderBase(factory, !reset)
     releaseImage(working?.canvas)
     if (reset) {
       done.length = undone.length = 0
@@ -86,5 +91,5 @@ export function useMaskHistory(frame) {
     revision.value++
   }
 
-  return { setBase, begin, append, commit, cancel, undo, redo, dispose, canUndo, canRedo, get mask() { return working } }
+  return { setBase, renderBase, begin, append, commit, cancel, undo, redo, dispose, canUndo, canRedo, get mask() { return working } }
 }
