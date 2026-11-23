@@ -364,18 +364,15 @@ function reportProgress(progress) {
 }
 
 function applyResult(result, task) {
-    const { logits, side, imageSize, region, backend } = result
-
+  const { logits, side, imageSize, region, backend } = result
   let selected = 0
   let minX = side
   let minY = side
   let maxX = -1
   let maxY = -1
-
   for (let y = 0; y < side; y++) {
     for (let x = 0; x < side; x++) {
       if (logits[y * side + x] <= 0) continue
-
       selected++
       minX = Math.min(minX, x)
       minY = Math.min(minY, y)
@@ -383,7 +380,19 @@ function applyResult(result, task) {
       maxY = Math.max(maxY, y)
     }
   }
-
+  const polygons = maskPolygons(result.logits, result.side, result.imageSize, frame, result.region)
+  let polygonMinX = Infinity
+  let polygonMinY = Infinity
+  let polygonMaxX = -Infinity
+  let polygonMaxY = -Infinity
+  for (const polygon of polygons) {
+    for (const point of polygon) {
+      polygonMinX = Math.min(polygonMinX, point.x)
+      polygonMinY = Math.min(polygonMinY, point.y)
+      polygonMaxX = Math.max(polygonMaxX, point.x)
+      polygonMaxY = Math.max(polygonMaxY, point.y)
+    }
+  }
   const diagnostic = {
     backend,
     frame,
@@ -392,14 +401,17 @@ function applyResult(result, task) {
     region,
     maskSide: side,
     selectedPixels: selected,
-    maskBounds: selected
-      ? { minX, minY, maxX, maxY }
-      : null,
+    maskBounds: selected ? { minX, minY, maxX, maxY } : null,
+    polygonCount: polygons.length,
+    polygonBounds: polygons.length ? {
+      minX: Math.round(polygonMinX),
+      minY: Math.round(polygonMinY),
+      maxX: Math.round(polygonMaxX),
+      maxY: Math.round(polygonMaxY),
+    } : null,
   }
-
   console.log('DIAGNOSTICO MOBILE SAM:', diagnostic)
-  window.__samDiagnostic = diagnostic
-  const polygons = maskPolygons(result.logits, result.side, result.imageSize, frame, result.region)
+  diagnosticText.value = JSON.stringify(diagnostic, null, 2)
   history.setBase(() => polygonMask(frame, polygons), phase.value !== 'mask')
   if (task.label && accepted) {
     const before = accepted.result
@@ -561,6 +573,10 @@ async function confirm(saveInLibrary = false) {
     </div>
 
     <footer class="cutout-controls">
+      <details v-if="diagnosticText" style="width: 100%; padding: 8px; border: 1px solid #aab5aa; border-radius: 8px;">
+        <summary style="cursor: pointer; font-weight: 600;">Diagnóstico da IA (temporário)</summary>
+        <pre style="white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; user-select: text;">{{ diagnosticText }}</pre>
+      </details>
       <p v-if="message" class="inline-warning" role="status">{{ message }}</p>
       <div v-if="canPrompt" class="cutout-tools">
         <div class="tool-group" aria-label="Indicações para a IA">
