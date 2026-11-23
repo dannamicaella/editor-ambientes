@@ -5,7 +5,7 @@ import { ArrowDown, ArrowUp, Copy, Image, Layers3, Plus, Scissors, Trash2 } from
 import ShadowControls from './ShadowControls.vue'
 
 const props = defineProps({ layers: Array, selected: String, open: Boolean, shadowDraft: Object })
-const emit = defineEmits(['select', 'add', 'duplicate', 'delete', 'reorder', 'change', 'mask', 'toggle', 'replace', 'shadow-preview'])
+const emit = defineEmits(['select', 'add', 'duplicate', 'delete', 'reorder', 'change', 'mask', 'toggle', 'replace', 'shadow-preview', 'save-cutout'])
 const index = computed(() => props.layers.findIndex((layer) => layer.id === props.selected))
 const target = computed(() => props.layers[index.value])
 function change(property, value) {
@@ -52,6 +52,7 @@ function change(property, value) {
           :preview="shadowDraft?.id === target.id ? shadowDraft.value : undefined"
           @preview="emit('shadow-preview', target.id, $event)" @update:model-value="change('shadow', $event)" />
         <QBtn no-caps unelevated class="btn btn-outline mask-button" @click="emit('mask', target.id)"><Scissors :size="17" /> Editar recorte</QBtn>
+        <QBtn no-caps flat class="btn btn-text mask-button" @click="emit('save-cutout', target.id)">Salvar em Meus Recortes</QBtn>
       </div>
     </div>
   </aside>

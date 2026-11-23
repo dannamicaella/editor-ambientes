@@ -40,8 +40,6 @@ function afterHide() {
         <h2>{{ title }}</h2>
         <QBtn flat round aria-label="Fechar" @click="emit('update:modelValue', false)"><X :size="20" /></QBtn>
       </div>
-      <QBtn v-if="allowLibrary" no-caps unelevated class="btn btn-outline source-library"
-        @click="pendingLibrary = true; emit('update:modelValue', false)"><Scissors :size="18" /> Meus Recortes</QBtn>
       <p class="muted">{{ hint }}</p>
       <input ref="camera" hidden type="file" v-bind="cameraInputAttributes()" @change="pick">
       <input ref="gallery" hidden type="file" :accept="IMAGE_TYPES" @change="pick">
@@ -49,6 +47,8 @@ function afterHide() {
         <QBtn no-caps unelevated class="source-choice" @click="camera.click()"><Camera :size="22" /> Fotografar</QBtn>
         <QBtn no-caps unelevated class="source-choice" @click="gallery.click()"><Image :size="22" /> Escolher da galeria</QBtn>
       </div>
+      <QBtn v-if="allowLibrary" no-caps unelevated class="btn btn-outline source-library"
+        @click="pendingLibrary = true; emit('update:modelValue', false)"><Scissors :size="18" /> Meus Recortes</QBtn>
     </QCard>
   </QDialog>
 </template>

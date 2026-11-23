@@ -32,6 +32,12 @@ Abra o endereço exibido pelo Vite, normalmente `http://127.0.0.1:5173/`. A prim
 5. Nomeie e **Salve** a montagem. Reabra em **Minhas montagens**. As ações de desfazer e refazer estão disponíveis durante a edição.
 6. Use **Exportar** para baixar PNG ou JPEG. PNG preserva a transparência da composição e JPEG permite ajustar a qualidade. Em **Compartilhar**, prepare a imagem e selecione **Compartilhar arquivo**. No Android, escolha o WhatsApp no menu do dispositivo, se estiver instalado. Quando o menu estiver indisponível, baixe o arquivo e anexe-o no aplicativo desejado.
 
+### Duplicar montagens e reutilizar recortes
+
+- Em **Minhas montagens**, use **Duplicar** para criar uma versão independente, com o sufixo **- Cópia**. Abra a cópia para editá-la ou use a ação de renomear no cartão.
+- Ao concluir um recorte, use **Salvar em Meus Recortes** e dê um nome ao objeto. A mesma ação fica disponível no painel da camada para guardar recortes existentes.
+- No editor, use **Adicionar objeto → Meus Recortes** para inserir o objeto em uma nova camada. Repita para inserir outras instâncias. Na tela inicial, **Meus Recortes** permite visualizar, renomear e excluir itens da biblioteca. Excluir um item da biblioteca preserva as montagens que já o utilizam.
+
 ### Ajustar sombras
 
 Selecione o objeto, marque **Aplicar sombra** e abra **Ajustar sombras**. Comece com **Sombra automática**. Regule a opacidade e o desfoque da sombra ambiente e a intensidade da sombra de contato. A cor e os deslocamentos X e Y afetam ambas. Os ajustes acompanham a posição, escala e rotação e ficam salvos na montagem e visíveis no PNG ou JPEG exportado.

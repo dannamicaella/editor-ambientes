@@ -7,11 +7,13 @@ import CutoutEditor from '../components/CutoutEditor.vue'
 import ExportDialog from '../components/ExportDialog.vue'
 import ImageSource from '../components/ImageSource.vue'
 import LayerInspector from '../components/LayerInspector.vue'
+import CutoutLibrary from '../components/CutoutLibrary.vue'
+import NameDialog from '../components/NameDialog.vue'
 import { addLayer, adjustForMask, alterLayer, constrainTransform, createLayer, duplicateLayer, removeLayer, reorderLayer } from '../composables/projectModel.js'
 import { useProject } from '../composables/useProject.js'
 import { renderExport } from '../services/export.js'
-import { decodeImage, importPhoto, releaseImage } from '../services/images.js'
-import { saveProject, storageError } from '../services/projects.js'
+import { cutoutThumbnail, decodeImage, importPhoto, releaseImage } from '../services/images.js'
+import { PROJECT_NAME_LIMIT, saveCutout, saveProject, storageError } from '../services/projects.js'
 import { clamp, fitSize } from '../utils/geometry.js'
 
 const props = defineProps({ initial: { type: Object, required: true } })
@@ -24,6 +26,8 @@ const shadowDraft = shallowRef()
 const cutout = shallowRef()
 const source = ref(false)
 const sourcePurpose = ref('object')
+const library = ref(false)
+const librarySave = shallowRef()
 const inspectorOpen = ref(false)
 const busy = ref('')
 const showExport = ref(false)
@@ -89,21 +93,43 @@ function closeMask() {
   nextTick(() => releaseImage(image))
 }
 
-function insert(asset) {
+function addObjectLayer(asset, name = asset.name) {
   assets.set(asset.id, asset)
+  const layer = { ...createLayer(asset), name }
+  commit(addLayer(project.value, layer))
+  selected.value = layer.id
+}
+
+function addFromLibrary(asset, name) {
+  addObjectLayer(asset, name)
+  emit('notice', 'Objeto adicionado à montagem.')
+}
+
+async function saveToLibrary(name) {
+  const { asset } = librarySave.value
+  await saveCutout(asset, name, await cutoutThumbnail(asset))
+  emit('notice', 'Objeto salvo em Meus Recortes.')
+}
+
+function saveLayerCutout(id) {
+  const layer = project.value.layers.find((candidate) => candidate.id === id)
+  if (layer) librarySave.value = { asset: assets.get(layer.assetId), name: layer.name }
+}
+
+function insert(asset, saveInLibrary) {
   const layerId = cutout.value?.layerId
   if (layerId) {
+    assets.set(asset.id, asset)
     const layer = project.value.layers.find((candidate) => candidate.id === layerId)
     const patch = adjustForMask(layer, assets.get(layer.assetId), asset, assets.get(project.value.backgroundId))
     commit(alterLayer(project.value, layerId, patch))
     selected.value = layerId
   } else {
-    const layer = createLayer(asset)
-    commit(addLayer(project.value, layer))
-    selected.value = layer.id
+    addObjectLayer(asset)
   }
   closeMask()
-  emit('notice', layerId ? 'Recorte atualizado.' : 'Objeto adicionado à montagem.')
+  if (saveInLibrary) saveLayerCutout(selected.value)
+  else emit('notice', layerId ? 'Recorte atualizado.' : 'Objeto adicionado à montagem.')
 }
 
 function duplicate(id) {
@@ -177,7 +203,7 @@ function preventUnload(event) {
 }
 
 function shortcuts(event) {
-  if (cutout.value || busy.value || /^(INPUT|TEXTAREA|SELECT)$/.test(event.target.tagName)) return
+  if (cutout.value || busy.value || library.value || librarySave.value || /^(INPUT|TEXTAREA|SELECT)$/.test(event.target.tagName)) return
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') {
     event.preventDefault()
     if (event.shiftKey) state.redo()
@@ -204,7 +230,7 @@ onBeforeUnmount(() => {
         <QBtn flat round aria-label="Voltar às montagens" title="Voltar às montagens" @click="requestExit"><ChevronLeft :size="24" /></QBtn>
         <span class="editor-symbol editor-identity-mark"><Layers3 :size="22" /></span>
         <div class="editor-title">
-          <input ref="nameInput" :value="project.name" maxlength="80" aria-label="Nome da montagem" @blur="rename" @keydown.enter="$event.target.blur()">
+          <input ref="nameInput" :value="project.name" :maxlength="PROJECT_NAME_LIMIT" aria-label="Nome da montagem" @blur="rename" @keydown.enter="$event.target.blur()">
           <span>{{ dirty ? 'Alterações a salvar' : 'Salva no dispositivo' }}</span>
         </div>
       </div>
@@ -230,15 +256,19 @@ onBeforeUnmount(() => {
         @shadow-preview="(id, value) => shadowDraft = value ? { id, value } : undefined" @toggle="inspectorOpen = !inspectorOpen"
         @select="selected = $event" @add="openSource('object')" @replace="openSource('background')"
         @duplicate="duplicate" @delete="commit(removeLayer(project, $event))"
-        @reorder="(id, delta) => commit(reorderLayer(project, id, delta))" @change="change" @mask="editMask" />
+        @reorder="(id, delta) => commit(reorderLayer(project, id, delta))" @change="change" @mask="editMask" @save-cutout="saveLayerCutout" />
     </div>
   </main>
 
   <CutoutEditor v-if="cutout" :input="cutout" @cancel="closeMask" @confirm="insert" />
   <ImageSource v-model="source"
+    :allow-library="sourcePurpose === 'object'"
     :title="sourcePurpose === 'object' ? 'Adicionar objeto' : 'Trocar foto de fundo'"
     :hint="sourcePurpose === 'object' ? 'Escolha a fotografia do objeto que você quer recortar.' : 'Escolha uma nova fotografia para a área de montagem.'"
-    @choose="handleSource" />
+    @choose="handleSource" @library="library = true" />
+  <CutoutLibrary v-model="library" allow-add @add="addFromLibrary" />
+  <NameDialog :model-value="Boolean(librarySave)" :initial-name="librarySave?.name" title="Salvar em Meus Recortes"
+    label="Nome do recorte" action="Salvar recorte" :save="saveToLibrary" @update:model-value="!$event && (librarySave = undefined)" />
   <ExportDialog v-model="showExport" :project :assets="activeAssets" :share-first="shareFirst" @notice="emit('notice', $event)" />
   <QDialog v-model="exitDialog">
     <QCard class="dialog-card">

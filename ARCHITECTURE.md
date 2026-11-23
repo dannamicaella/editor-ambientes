@@ -15,6 +15,7 @@ O Editor de Ambientes é uma SPA estática em Vue 3. Quasar fornece diálogos, b
 | `src/components/ShadowControls.vue`, `src/services/shadows.js` | Ajustes de sombra e rasterização das silhuetas ambiente e de contato |
 | `src/composables/projectModel.js`, `useProject.js`, `history.js` | Estado, histórico e coleta de ativos sem referência |
 | `src/services/projects.js` | Projetos, ativos e miniaturas no IndexedDB |
+| `src/components/CutoutLibrary.vue`, `NameDialog.vue` | Biblioteca de recortes e formulários locais de nomes |
 | `src/services/export.js`, `src/components/ExportDialog.vue` | Renderização em resolução própria, codificação, download e Web Share |
 | `src/services/pwa.js`, `tools/sw-template.js`, `vite.config.js` | Instalação, geração do precache e verificação de disponibilidade offline |
 
@@ -32,9 +33,17 @@ O MobileSAM usa os pesos oficiais, exportados como codificador TinyViT e decodif
 - Os centros de objetos são normalizados em relação à largura e altura do fundo. A escala usa o menor lado do fundo, com proporção preservada. As mudanças por gesto usam um rascunho de transformação durante o movimento e uma entrada no histórico por gesto concluído.
 - A prévia usa bitmaps reduzidos e liberta os removidos. A exportação decodifica cada camada conforme a dimensão de destino e descarta o bitmap após desenhá-lo.
 - Cada camada armazena os ajustes de sombra. A renderização usa a mesma silhueta ambiente e uma projeção concentrada da base do recorte na prévia e na exportação. Os deslocamentos seguem os eixos do objeto e o tamanho é proporcional à camada. O raster de cada sombra tem resolução limitada e é reaproveitado até os parâmetros relevantes ou a imagem mudarem. Montagens antigas com sombra ativa preservam sua aparência até o primeiro ajuste.
-- Projetos e camadas referenciam ativos por ID. Cada objeto guarda o Blob original, um PNG de máscara e um PNG do recorte. Camadas duplicadas compartilham o ativo. Editar uma máscara cria um novo ativo para a camada selecionada e mantém as demais independentes. Os históricos retêm os ativos referenciados durante a sessão.
+- Projetos e camadas referenciam ativos por ID. Cada objeto guarda o Blob original, um PNG de máscara e um PNG do recorte. Camadas duplicadas e recortes reutilizados compartilham o ativo imutável. Editar uma máscara cria um novo ativo para a camada selecionada. Os históricos retêm os ativos referenciados durante a sessão.
 - O histórico de composição guarda até 40 estados de metadados. O histórico da máscara guarda os traços de pincel da sessão e permite desfazer os 24 mais recentes. O editor reaplica os traços ao atualizar a máscara por IA.
 - Miniaturas, metadados e ativos do projeto são salvos numa transação de IndexedDB. Exclusão também é transacional. Em abas diferentes a última gravação concluída para o mesmo projeto prevalece.
+
+### Montagens duplicadas e Meus Recortes
+
+O IndexedDB v2 adiciona `media` para os ativos imutáveis e `cutouts` para os nomes, miniaturas PNG e referências da biblioteca. A tabela `assets` mantém as referências por montagem, com um índice para encontrar seus vínculos com `media`. A biblioteca lista só os metadados e as miniaturas e carrega a imagem em tamanho integral ao visualizar ou adicionar um recorte.
+
+A atualização do banco preserva os registros v1. A abertura interpreta tanto os ativos do formato anterior, armazenados na própria montagem, quanto as novas referências. Ao salvar ou duplicar uma montagem antiga, uma transação converte seus ativos em referências. Duplicar copia os dados editáveis e preserva os mesmos arquivos de imagem e a miniatura, sem recomprimir. As camadas reutilizadas ganham IDs próprios e guardam o nome que tinham ao ser adicionadas.
+
+As exclusões consultam os índices de montagens e de recortes na mesma transação. O ativo compartilhado é removido somente quando perde a última referência persistida. Um editor já aberto conserva seus ativos em memória, inclusive no histórico. Ele pode gravá-los novamente ao salvar, mesmo que uma entrada da biblioteca tenha sido excluída em outra aba.
 
 ## Offline
 

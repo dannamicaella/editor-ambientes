@@ -478,14 +478,14 @@ function redo() {
   markMask()
 }
 
-async function confirm() {
+async function confirm(saveInLibrary = false) {
   if (busy.value || pointers.size) return
   busy.value = 'Aplicando transparência…'
   message.value = ''
   try {
     await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
     const result = await finishMask({ ...asset, ...frame }, history.mask, image)
-    if (!disposed) emit('confirm', result)
+    if (!disposed) emit('confirm', result, saveInLibrary)
   } catch (error) {
     if (!disposed) message.value = error.message
   } finally {
@@ -573,7 +573,8 @@ async function confirm() {
           <QBtn v-if="manualAvailable && !manual" no-caps flat class="btn" :disable="!!busy" @click="selectMode(true)">Recorte manual</QBtn>
           <QBtn flat no-caps class="btn" :class="{ 'matte-active': solid }" :aria-pressed="solid" @click="solid = !solid">Fundo sólido</QBtn>
           <QBtn no-caps flat class="btn" :disable="!!busy" @click="selectMode(manual, variant !== 'contour')">{{ manual ? 'Voltar ao contorno' : 'Nova seleção' }}</QBtn>
-          <QBtn no-caps unelevated class="btn btn-primary" :disable="!!busy" @click="confirm"><Check :size="18" /> Confirmar recorte</QBtn>
+          <QBtn no-caps flat class="btn btn-text" :disable="!!busy" @click="confirm(true)">Salvar em Meus Recortes</QBtn>
+          <QBtn no-caps unelevated class="btn btn-primary" :disable="!!busy" @click="confirm()"><Check :size="18" /> Confirmar recorte</QBtn>
         </template>
       </div>
     </footer>

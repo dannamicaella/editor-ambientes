@@ -23,6 +23,8 @@ O Playwright usa o Chrome instalado no caminho padrão do Windows, quando encont
 | IA na PWA | Inferência real com foto de almofada apoiada num sofá, contorno guia, pontos de inclusão e exclusão, cache verificado, nova inferência de outra seleção em modo offline com fallback WASM |
 | Foto original de aceitação | Foto de 900 × 1.600 px da almofada dos três peixes sobre palha. Verificação de RGB e alfa no PNG do objeto, além da inspeção visual do recorte em WASM e WebGPU |
 | Sombras | Ajuste ao vivo, diferença entre ambiente e contato, rotação, persistência após reabrir e comparação de pixels na prévia, PNG e JPEG |
+| Duplicação de montagens | Banco v1 preparado antes de abrir a PWA, duplicação offline de duas camadas com sombras, edição, renomeação, reabertura e exclusão da cópia |
+| Meus Recortes | Grade e toque a 360 px em modo offline, prévia PNG com alfa, renomeação, reutilização na mesma e em outra montagem, exportação após exclusão da biblioteca e liberação das imagens ao apagar a última montagem |
 | Falha e compatibilidade no Chrome | Orientação JPEG/EXIF, troca de fundo, tentativa sem modelo e sem rede, alternativa manual e compartilhamento simulado |
 | Contorno na resolução original | Foto de 2.600 × 1.000 px com textura clara e estampa azul, contorno côncavo desenhado com mouse e zoom/pan em DPR 2, pixels opacos intactos na estampa, transparência nas áreas externas, antialiasing no PNG e alternância do fundo de prévia |
 
@@ -30,7 +32,7 @@ As suítes usam imagens de teste geradas no navegador e a fotografia CC0 distrib
 
 ## Resultado da verificação
 
-Passaram o lint, os 17 testes de lógica e os 7 fluxos Playwright da PWA. Os builds de produção e PWA foram gerados com sucesso. O teste da foto original inclui toques negativos consecutivos, uma remoção proposital na estampa, a recuperação com **Manter** no mesmo ponto e a confirmação de que repetir o toque dá feedback sem duplicar a indicação. O teste conferiu igualdade RGBA nos três peixes e no tecido, além de alfa zero em cinco amostras da palha. O PNG salvo pelo editor foi inspecionado e está em `.tmp/mobilesam-acceptance/editor-recorte.png`.
+Passaram o lint, os 17 testes de lógica e os 9 fluxos Playwright da PWA. Os builds de produção e PWA foram gerados com sucesso. O teste da foto original inclui toques negativos consecutivos, uma remoção proposital na estampa, a recuperação com **Manter** no mesmo ponto e a confirmação de que repetir o toque dá feedback sem duplicar a indicação. O teste conferiu igualdade RGBA nos três peixes e no tecido, além de alfa zero em cinco amostras da palha. O PNG salvo pelo editor foi inspecionado e está em `.tmp/mobilesam-acceptance/editor-recorte.png`.
 
 O benchmark usa o Worker compilado da PWA, força cada backend e executa ambos no Chrome com a mesma foto e as mesmas indicações. Mede preparação em localhost, primeira codificação, primeira decodificação e decodificação após corrigir os pontos. Os comparativos e o JSON ficam em `.tmp/mobilesam-benchmark/` para a foto CC0 do editor e em `.tmp/mobilesam-acceptance/` para a foto original.
 
@@ -62,3 +64,10 @@ O Chrome desktop não valida hardware, desempenho térmico ou a integração nat
 7. Repita com pouca memória e espaço reduzido para observar o comportamento do navegador e as mensagens de erro.
 
 A foto original fica em `test-fixtures/almofada-peixes.jpeg` e é usada localmente na aceitação. Ela fica fora dos builds distribuídos. As medições são do Chrome no Windows. Tempo e pico de memória ainda precisam ser medidos em Android físico.
+
+## Testar duplicação e biblioteca
+
+1. Em **Minhas montagens**, duplique uma montagem com camadas. Abra a cópia, altere uma sombra, salve e verifique a original. Exclua a cópia e reabra a original.
+2. Ao terminar um recorte, escolha **Salvar em Meus Recortes**. Nomeie o item e abra a biblioteca pela tela inicial para verificar a miniatura e a transparência.
+3. Abra uma montagem e use **Adicionar objeto → Meus Recortes** duas vezes. Mova apenas uma das camadas. Salve, repita em outra montagem, exclua o item da biblioteca e exporte ambas.
+4. Na PWA, aguarde **Offline pronto**, desligue a conexão e repita a duplicação, a consulta à biblioteca e a exportação depois de reabrir o aplicativo.

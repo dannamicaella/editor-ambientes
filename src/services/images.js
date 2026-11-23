@@ -27,6 +27,19 @@ export function encodeCanvas(canvas, type = 'image/png', quality) {
   })
 }
 
+export async function cutoutThumbnail({ cutout, bounds }) {
+  const size = fitSize(bounds.width, bounds.height, 240)
+  const image = await decodeImage(cutout, size)
+  const canvas = createCanvas(size.width, size.height)
+  try {
+    context2d(canvas).drawImage(image, 0, 0, size.width, size.height)
+    return await encodeCanvas(canvas)
+  } finally {
+    releaseImage(image)
+    releaseImage(canvas)
+  }
+}
+
 export async function decodeImage(blob, size) {
   if (typeof createImageBitmap === 'function') {
     try {

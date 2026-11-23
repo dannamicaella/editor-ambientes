@@ -430,13 +430,13 @@ test('aceitação da almofada dos três peixes preserva o tecido e deixa a palha
   await page.getByRole('button', { name: 'Salvar montagem' }).click()
   await expect(page.getByText('Salva no dispositivo', { exact: true })).toBeVisible()
   const result = await page.evaluate(async () => {
-    const request = indexedDB.open('editor-de-ambientes', 1)
+    const request = indexedDB.open('editor-de-ambientes')
     const db = await new Promise((resolve, reject) => {
       request.onsuccess = () => resolve(request.result)
       request.onerror = () => reject(request.error)
     })
     const assets = await new Promise((resolve, reject) => {
-      const read = db.transaction('assets').objectStore('assets').getAll()
+      const read = db.transaction('media').objectStore('media').getAll()
       read.onsuccess = () => resolve(read.result)
       read.onerror = () => reject(read.error)
     })
@@ -561,13 +561,13 @@ test.describe('contorno em alta densidade de pixels', () => {
     await expect(page.getByText('Salva no dispositivo', { exact: true })).toBeVisible()
 
     const output = await page.evaluate(async () => {
-      const request = indexedDB.open('editor-de-ambientes', 1)
+      const request = indexedDB.open('editor-de-ambientes')
       const db = await new Promise((resolve, reject) => {
         request.onsuccess = () => resolve(request.result)
         request.onerror = () => reject(request.error)
       })
       const assets = await new Promise((resolve, reject) => {
-        const request = db.transaction('assets').objectStore('assets').getAll()
+        const request = db.transaction('media').objectStore('media').getAll()
         request.onsuccess = () => resolve(request.result)
         request.onerror = () => reject(request.error)
       })
@@ -673,5 +673,253 @@ test('sombras atualizam a prévia, acompanham a rotação e permanecem no PNG e 
     expect([result.width, result.height]).toEqual([400, 300])
     expect(red(result.pixels[0])).toBe(true)
     expect(red(result.pixels[1])).toBe(false)
+  }
+})
+
+async function localRecords(page) {
+  return page.evaluate(async () => {
+    const result = (request) => new Promise((resolve, reject) => {
+      request.onsuccess = () => resolve(request.result)
+      request.onerror = () => reject(request.error)
+    })
+    const db = await result(indexedDB.open('editor-de-ambientes'))
+    try {
+      const stores = ['projects', 'assets', 'media', 'cutouts']
+      const transaction = db.transaction(stores)
+      const [projects, assets, media, cutouts] = await Promise.all(stores.map((name) => result(transaction.objectStore(name).getAll())))
+      return { version: db.version, projects, assets, media: media.map(({ id }) => id), cutouts: cutouts.map(({ id, assetId, name }) => ({ id, assetId, name })) }
+    } finally {
+      db.close()
+    }
+  })
+}
+
+test('abre montagem da versão 1, duplica camadas e sombras e preserva a original ao editar e excluir a cópia offline', async ({ page, context }) => {
+  await page.route('**/legacy-fixture', (route) => route.fulfill({ contentType: 'text/html', body: '<title>Banco versão 1</title>' }))
+  await page.goto('/legacy-fixture')
+  await page.evaluate(async () => {
+    const canvas = document.createElement('canvas')
+    canvas.width = 400
+    canvas.height = 300
+    const context = canvas.getContext('2d')
+    context.fillStyle = '#769c9c'
+    context.fillRect(0, 0, 400, 300)
+    const background = await new Promise((resolve) => canvas.toBlob(resolve))
+    canvas.width = 80
+    canvas.height = 60
+    context.fillStyle = '#c84c31'
+    context.fillRect(0, 0, 80, 60)
+    const object = await new Promise((resolve) => canvas.toBlob(resolve))
+    await new Promise((resolve, reject) => {
+      const request = indexedDB.open('editor-de-ambientes', 1)
+      request.onupgradeneeded = () => {
+        const db = request.result
+        const id = 'montagem-v1'
+        db.createObjectStore('summaries', { keyPath: 'id' }).add({
+          id, name: 'Sala antiga', updatedAt: Date.now(), thumbnail: background, count: 2,
+        })
+        const layer = { name: 'Almofada antiga', assetId: 'objeto-v1', x: .5, y: .6, scale: .36, rotation: 23, opacity: .89 }
+        db.createObjectStore('projects', { keyPath: 'id' }).add({
+          id, name: 'Sala antiga', backgroundId: 'fundo-v1', layers: [
+            { ...layer, id: 'camada-1', shadow: true },
+            { ...layer, id: 'camada-2', name: 'Segunda almofada', x: .72, shadow: {
+              enabled: true, opacity: 31, blur: 3, x: 5, y: 6, color: '#172634', contact: 41,
+            } },
+          ],
+        })
+        const assets = db.createObjectStore('assets', { keyPath: ['projectId', 'id'] })
+        assets.createIndex('projectId', 'projectId')
+        assets.add({ projectId: id, id: 'fundo-v1', blob: background, width: 400, height: 300 })
+        assets.add({
+          projectId: id, id: 'objeto-v1', name: 'Almofada antiga', blob: object, cutout: object,
+          width: 80, height: 60, bounds: { x: 0, y: 0, width: 80, height: 60 },
+        })
+      }
+      request.onsuccess = () => { request.result.close(); resolve() }
+      request.onerror = () => reject(request.error)
+    })
+  })
+  await page.goto('/')
+  await expect(page.getByRole('button', { name: 'Offline pronto' })).toBeVisible()
+  await context.setOffline(true)
+  await page.getByRole('button', { name: 'Abrir montagem Sala antiga', exact: true }).click()
+  await expect(page.getByRole('button', { name: 'Segunda almofada', exact: true })).toBeVisible()
+  await page.getByRole('button', { name: 'Voltar às montagens' }).click()
+  const original = (await localRecords(page)).projects[0]
+  expect((await localRecords(page)).media).toEqual([])
+  await page.getByRole('button', { name: 'Duplicar Sala antiga', exact: true }).click()
+  const openingCopy = page.getByRole('button', { name: 'Abrir montagem Sala antiga - Cópia', exact: true })
+  await expect(openingCopy).toBeVisible()
+  const duplicated = await localRecords(page)
+  const copy = duplicated.projects.find(({ id }) => id !== original.id)
+  expect(copy).toEqual({ ...original, id: copy.id, name: 'Sala antiga - Cópia' })
+  expect(duplicated.media).toHaveLength(2)
+  expect(duplicated.assets).toHaveLength(4)
+  await page.reload()
+  await page.getByRole('button', { name: 'Renomear Sala antiga - Cópia', exact: true }).click()
+  await page.getByRole('dialog').getByLabel('Nome da montagem').fill('Sala alternativa')
+  await page.getByRole('button', { name: 'Salvar nome' }).click()
+  await page.getByRole('button', { name: 'Abrir montagem Sala alternativa' }).click()
+  await page.getByRole('button', { name: 'Segunda almofada' }).click()
+  await expect(page.getByRole('slider', { name: 'Rotação' })).toHaveValue('23')
+  await setRange(page.getByRole('slider', { name: 'Rotação' }), '80')
+  await page.getByText('Ajustar sombras', { exact: true }).click()
+  await setRange(page.getByRole('slider', { name: 'Intensidade da sombra de contato' }), '73')
+  await page.getByRole('button', { name: 'Salvar montagem' }).click()
+  await expect(page.getByText('Salva no dispositivo', { exact: true })).toBeVisible()
+  const edited = (await localRecords(page)).projects
+  expect(edited.find(({ id }) => id === original.id)).toEqual(original)
+  expect(edited.find(({ id }) => id === copy.id).layers[1]).toMatchObject({ rotation: 80, shadow: { contact: 73 } })
+  await page.getByRole('button', { name: 'Voltar às montagens' }).click()
+  await page.getByRole('button', { name: 'Excluir Sala alternativa' }).click()
+  await page.getByRole('button', { name: 'Excluir montagem', exact: true }).click()
+  await expect(page.getByRole('button', { name: 'Abrir montagem Sala alternativa' })).toHaveCount(0)
+  await page.getByRole('button', { name: 'Abrir montagem Sala antiga', exact: true }).click()
+  const surviving = await localRecords(page)
+  expect(surviving.projects).toEqual([original])
+  expect(surviving.media).toHaveLength(2)
+  await expect(page.getByRole('button', { name: 'Segunda almofada' })).toBeVisible()
+})
+
+test('Meus Recortes conserva transparência e reutiliza instâncias offline a 360 px, inclusive após excluir da biblioteca', async ({ browser, baseURL }) => {
+  test.setTimeout(90_000)
+  const context = await browser.newContext({ viewport: { width: 360, height: 800 }, isMobile: true, hasTouch: true })
+  try {
+    const page = await context.newPage()
+    page.setDefaultTimeout(10_000)
+    await page.goto(baseURL)
+    await expect(page.getByRole('button', { name: 'Offline pronto' })).toBeVisible({ timeout: 15_000 })
+    const background = await imageFile(page, 'background')
+    const object = await imageFile(page, 'object')
+    await context.setOffline(true)
+    const noModel = []
+    page.on('request', (request) => { if (request.url().includes('/ai/')) noModel.push(request.url()) })
+    await page.reload()
+    await page.getByRole('button', { name: 'Meus Recortes', exact: true }).tap()
+    await expect(page.getByText('Nenhum recorte salvo', { exact: true })).toBeVisible()
+    await page.getByRole('dialog').getByRole('button', { name: 'Fechar' }).tap()
+
+    async function start(name) {
+      await page.getByRole('button', { name: 'Nova montagem', exact: true }).tap()
+      await upload(page, background)
+      await page.getByLabel('Nome da montagem').fill(name)
+    }
+    async function saveAndExit() {
+      await page.getByRole('button', { name: 'Salvar montagem' }).tap()
+      await expect(page.getByText('Salva no dispositivo', { exact: true })).toBeVisible()
+      await page.getByRole('button', { name: 'Voltar às montagens' }).tap()
+    }
+    async function pickFromLibrary() {
+      await page.locator('.editor-toolbar').getByRole('button', { name: 'Adicionar objeto', exact: true }).tap()
+      await page.getByRole('dialog').getByRole('button', { name: 'Meus Recortes', exact: true }).tap()
+      await page.getByRole('button', { name: 'Adicionar Peça renomeada à montagem', exact: true }).tap()
+    }
+
+    await start('Sala A')
+    const canvas = await addObject(page, object)
+    const contour = Array.from({ length: 19 }, (_, index) => {
+      const angle = index * Math.PI / 9
+      return [150 + 72 * Math.cos(angle), 120 + 45 * Math.sin(angle)]
+    })
+    await drawContour(page, canvas, contour)
+    await page.getByRole('button', { name: 'Recortar pelo contorno' }).tap()
+    await expect(page.getByRole('heading', { name: 'Refine o recorte' })).toBeVisible()
+    await page.getByRole('button', { name: 'Salvar em Meus Recortes', exact: true }).tap()
+    await page.getByLabel('Nome do recorte').fill('Peça recortada')
+    await page.getByRole('button', { name: 'Salvar recorte', exact: true }).tap()
+    await expect(page.getByText('Objeto salvo em Meus Recortes.')).toBeVisible()
+    await saveAndExit()
+    await page.reload()
+    await page.getByRole('button', { name: 'Meus Recortes', exact: true }).tap()
+    await page.getByRole('button', { name: 'Visualizar Peça recortada' }).tap()
+    const picture = page.getByRole('img', { name: 'Peça recortada' })
+    await expect(picture).toBeVisible()
+    const cutout = await picture.evaluate(async (image) => {
+      await image.decode()
+      const canvas = document.createElement('canvas')
+      canvas.width = image.naturalWidth
+      canvas.height = image.naturalHeight
+      const context = canvas.getContext('2d')
+      context.drawImage(image, 0, 0)
+      return { size: [canvas.width, canvas.height], exterior: context.getImageData(0, 0, 1, 1).data[3],
+        interior: context.getImageData(canvas.width / 2, canvas.height / 2, 1, 1).data[3] }
+    })
+    expect(cutout).toMatchObject({ exterior: 0, interior: 255 })
+    expect(cutout.size[0]).toBeGreaterThanOrEqual(143)
+    expect(cutout.size[0]).toBeLessThanOrEqual(146)
+    expect(cutout.size[1]).toBeGreaterThanOrEqual(88)
+    expect(cutout.size[1]).toBeLessThanOrEqual(92)
+    await page.getByRole('button', { name: 'Voltar aos recortes' }).tap()
+    await page.getByRole('button', { name: 'Renomear Peça recortada' }).tap()
+    const naming = page.getByRole('dialog').filter({ has: page.getByRole('heading', { name: 'Renomear recorte' }) })
+    await naming.getByLabel('Nome do recorte').fill('Peça renomeada')
+    await naming.getByRole('button', { name: 'Salvar nome' }).tap()
+    await expect(page.getByRole('button', { name: 'Visualizar Peça renomeada' })).toBeVisible()
+    const library = page.getByRole('dialog').filter({ has: page.getByRole('heading', { name: 'Meus Recortes', exact: true }) })
+    expect(await library.evaluate((panel) => panel.scrollWidth)).toBeLessThanOrEqual(360)
+    await library.getByRole('button', { name: 'Fechar' }).tap()
+
+    await page.getByRole('button', { name: 'Abrir montagem Sala A' }).tap()
+    await pickFromLibrary()
+    await pickFromLibrary()
+    await page.getByRole('button', { name: 'Mostrar', exact: true }).tap()
+    await setRange(page.getByRole('slider', { name: 'Rotação' }), '37')
+    await page.getByLabel('Posição X').fill('72')
+    await page.getByLabel('Posição X').blur()
+    await saveAndExit()
+    await start('Sala B')
+    await pickFromLibrary()
+    await saveAndExit()
+    const before = await localRecords(page)
+    const first = before.projects.find(({ name }) => name === 'Sala A')
+    const second = before.projects.find(({ name }) => name === 'Sala B')
+    const [entry] = before.cutouts
+    expect(first.layers.map(({ assetId }) => assetId)).toEqual([entry.assetId, entry.assetId, entry.assetId])
+    expect(new Set(first.layers.map(({ id }) => id)).size).toBe(3)
+    expect(first.layers.map(({ name, rotation, x }) => [name, rotation, x])).toEqual([
+      ['Almofada', 0, .5], ['Peça renomeada', 0, .5], ['Peça renomeada', 37, .72],
+    ])
+    expect(second.layers[0]).toMatchObject({ assetId: entry.assetId, rotation: 0 })
+    expect(before.media).toHaveLength(3)
+
+    await page.getByRole('button', { name: 'Meus Recortes', exact: true }).tap()
+    await page.getByRole('button', { name: 'Excluir Peça renomeada' }).tap()
+    await page.getByRole('button', { name: 'Cancelar', exact: true }).tap()
+    await expect(page.getByRole('button', { name: 'Visualizar Peça renomeada' })).toBeVisible()
+    await page.getByRole('button', { name: 'Excluir Peça renomeada' }).tap()
+    await page.getByRole('button', { name: 'Excluir recorte', exact: true }).tap()
+    await expect(page.getByText('Nenhum recorte salvo', { exact: true })).toBeVisible()
+    await library.getByRole('button', { name: 'Fechar' }).tap()
+    expect((await localRecords(page)).media).toContain(entry.assetId)
+    await page.getByRole('button', { name: 'Abrir montagem Sala A' }).tap()
+    await expect(page.locator('.layer-row')).toHaveCount(3)
+    await page.getByRole('button', { name: 'Voltar às montagens' }).tap()
+    await page.getByRole('button', { name: 'Abrir montagem Sala B' }).tap()
+    await page.getByRole('button', { name: 'Exportar montagem' }).tap()
+    const dialog = page.getByRole('dialog')
+    await dialog.getByLabel('Formato').selectOption('image/png')
+    const download = page.waitForEvent('download')
+    await dialog.getByRole('button', { name: 'Exportar e baixar' }).tap()
+    expect(await decodedFile(page, await download, [[200, 150], [5, 5]])).toEqual({
+      width: 400, height: 300, alpha: 0, pixels: [[223, 103, 75, 255], [0, 0, 0, 0]],
+    })
+    await dialog.getByLabel('Formato').selectOption('image/jpeg')
+    const jpeg = page.waitForEvent('download')
+    await dialog.getByRole('button', { name: 'Exportar e baixar' }).tap()
+    const exported = await decodedFile(page, await jpeg, [[200, 150]])
+    expect(exported).toMatchObject({ width: 400, height: 300, alpha: 255 })
+    expect(exported.pixels[0][0]).toBeGreaterThan(200)
+    expect(noModel).toEqual([])
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(360)
+    await dialog.getByRole('button', { name: 'Fechar' }).tap()
+    await page.getByRole('button', { name: 'Voltar às montagens' }).tap()
+    for (const name of ['Sala A', 'Sala B']) {
+      await page.getByRole('button', { name: 'Excluir ' + name, exact: true }).tap()
+      await page.getByRole('button', { name: 'Excluir montagem', exact: true }).tap()
+      await expect(page.getByRole('button', { name: 'Abrir montagem ' + name })).toHaveCount(0)
+    }
+    expect((await localRecords(page)).media).toEqual([])
+  } finally {
+    await context.close()
   }
 })
