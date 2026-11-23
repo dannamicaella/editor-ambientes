@@ -1,4 +1,3 @@
-
 export const SAM_SIZE = 1024
 export const FULL_IMAGE = { x: 0, y: 0, width: 1, height: 1 }
 const LABELS = { negative: 0, positive: 1 }
@@ -179,7 +178,7 @@ function protectInterior(mask, side, width, height, indices, points, previous) {
 
 export function selectMask(
   logits, scores, side, points, box, size,
-  previous, correction, latest,
+  previous, correction, latest, diagnostics,
 ) {
   const length = side * side
   const validWidth = Math.ceil(size.width * side / SAM_SIZE)
@@ -262,8 +261,18 @@ export function selectMask(
       2 * enclosed / (count + enclosed) +
       0.55 * continuity
 
+    if (diagnostics) diagnostics.push({
+      candidate,
+      modelScore: Number(scores[candidate].toFixed(4)),
+      finalScore: Number(score.toFixed(4)),
+      selectedPixels: count,
+      outsideBoxPercent: box ? Number((100 * outside / count).toFixed(2)) : null,
+      promptPenalty: penalty,
+      correctionSatisfied,
+    })
+
     if (!best || score > best.score) {
-      best = { logits: mask, raw, score, correctionSatisfied }
+      best = { logits: mask, raw, score, correctionSatisfied, candidate }
     }
   }
 

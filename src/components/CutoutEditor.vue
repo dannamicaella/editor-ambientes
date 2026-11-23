@@ -499,6 +499,8 @@ function applyResult(result, task) {
   }
   const diagnostic = {
     backend,
+    maskAlternatives: result.diagnostics ?? [],
+    selectedAlternative: result.selectedCandidate ?? null,
     frame,
     image: { width: image.width, height: image.height },
     imageSize,

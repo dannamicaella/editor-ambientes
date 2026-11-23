@@ -11,20 +11,13 @@ let encodingMs
 let startupMs
 let assets
 
-function publish(request, data) {
-  self.postMessage({ request, ...data })
-}
-
-function absolute(path, base) {
-  return new URL(path, base).href
-}
-
+function publish(request, data) { self.postMessage({ request, ...data }) }
+function absolute(path, base) { return new URL(path, base).href }
 async function manifest(path, base) {
   const response = await fetch(absolute(path, base))
   if (!response.ok) throw new Error('Os arquivos da IA estão indisponíveis. Conecte-se para baixar o modelo ou use o recorte manual.')
   return response.json()
 }
-
 async function download(asset, base, progress) {
   const bytes = new Uint8Array(asset.bytes)
   let received = 0
@@ -55,15 +48,10 @@ async function download(asset, base, progress) {
   }
   return bytes
 }
-
 async function initialize({ request, base, provider }) {
   const start = performance.now()
-  if (provider === 'webgpu' && !await self.navigator.gpu?.requestAdapter()) {
-    throw new Error('O WebGPU não está disponível neste navegador ou dispositivo.')
-  }
-  const [runtime, model] = await Promise.all([
-    manifest('runtime.json', base), manifest('mobilesam-v1/manifest.json', base),
-  ])
+  if (provider === 'webgpu' && !await self.navigator.gpu?.requestAdapter()) throw new Error('O WebGPU não está disponível neste navegador ou dispositivo.')
+  const [runtime, model] = await Promise.all([manifest('runtime.json', base), manifest('mobilesam-v1/manifest.json', base)])
   const profile = runtime.profiles[provider]
   const modelAssets = ['encoder.onnx', 'decoder.onnx'].map((name) => ({
     ...model.files[name], path: 'mobilesam-v1/' + name,
@@ -86,17 +74,14 @@ async function initialize({ request, base, provider }) {
   ort.env.wasm.proxy = false
   ort.env.wasm.wasmPaths = { mjs: absolute(profile.glue.path, base), wasm: absolute(profile.binary.path, base) }
   ort.env.wasm.wasmBinary = await download(profile.binary, base, progress)
-
   const options = { executionProviders: [provider], graphOptimizationLevel: 'all' }
   encoder = await ort.InferenceSession.create(await download(encoderAsset, base, progress), options)
   decoder = await ort.InferenceSession.create(await download(decoderAsset, base, progress), options)
   ort.env.wasm.wasmBinary = undefined
   startupMs = Math.round(performance.now() - start)
   backend = provider
-  assets = ['runtime.json', 'mobilesam-v1/manifest.json', ...modelAssets.flatMap((asset) => (asset.parts ?? [asset]).map(({ path }) => path)),
-    profile.module.path, profile.glue.path, profile.binary.path].map((path) => absolute(path, base))
+  assets = ['runtime.json', 'mobilesam-v1/manifest.json', ...modelAssets.flatMap((asset) => (asset.parts ?? [asset]).map(({ path }) => path)), profile.module.path, profile.glue.path, profile.binary.path].map((path) => absolute(path, base))
 }
-
 async function encode({ request, bitmap, box, points, fullImage }) {
   publish(request, { progress: { step: 'encode' } })
   region = fullImage ? FULL_IMAGE : guidedRegion(bitmap.width, bitmap.height, box)
@@ -109,8 +94,7 @@ async function encode({ request, bitmap, box, points, fullImage }) {
   const context = canvas.getContext('2d', { willReadFrequently: true })
   if (!context) throw new Error('Este dispositivo não conseguiu preparar a foto para a IA.')
   context.imageSmoothingQuality = 'high'
-  context.drawImage(bitmap, Math.round(bitmap.width * region.x), Math.round(bitmap.height * region.y),
-    sourceWidth, sourceHeight, 0, 0, width, height)
+  context.drawImage(bitmap, Math.round(bitmap.width * region.x), Math.round(bitmap.height * region.y), sourceWidth, sourceHeight, 0, 0, width, height)
   const { data } = context.getImageData(0, 0, width, height)
   canvas.width = canvas.height = 1
   const plane = SAM_SIZE * SAM_SIZE
@@ -132,11 +116,8 @@ async function encode({ request, bitmap, box, points, fullImage }) {
     embedding = result.image_embeddings
     await encoder.release()
     encoder = undefined
-  } finally {
-    tensor.dispose()
-  }
+  } finally { tensor.dispose() }
 }
-
 async function predict({ request, points: rawPoints, box: rawBox, previous, refining }) {
   publish(request, { progress: { step: 'decode' } })
   const { points, box } = relativePrompts(rawPoints, rawBox, region)
@@ -147,18 +128,16 @@ async function predict({ request, points: rawPoints, box: rawBox, previous, refi
   const present = new ort.Tensor('float32', Float32Array.of(previous ? 1 : 0), [1])
   const correction = refining && containsPrompt(region, rawPoints.at(-1) ?? { x: -1, y: -1 })
   const feeds = { image_embeddings: embedding, point_coords: coords, point_labels: types, mask_input: prior, has_mask_input: present }
-
   async function candidate() {
     const result = await decoder.run(feeds)
     try {
       const side = result.masks.dims.at(-1)
-      return { ...selectMask(result.masks.data, result.scores.data, side, points, box, imageSize,
-        previous?.logits, correction, correction ? points.length - 1 : undefined), side }
-    } finally {
-      for (const tensor of Object.values(result)) tensor.dispose()
-    }
+      const diagnostics = []
+      const selection = selectMask(result.masks.data, result.scores.data, side, points, box, imageSize,
+        previous?.logits, correction, correction ? points.length - 1 : undefined, diagnostics)
+      return { ...selection, side, diagnostics }
+    } finally { for (const tensor of Object.values(result)) tensor.dispose() }
   }
-
   try {
     const start = performance.now()
     let selection = await candidate()
@@ -169,26 +148,15 @@ async function predict({ request, points: rawPoints, box: rawBox, previous, refi
     }
     const decodingMs = Math.round(performance.now() - start)
     const { logits, raw, side, correctionSatisfied } = selection
-    self.postMessage({ request, result: { logits, raw, side, correctionSatisfied, imageSize, region, assets, backend, startupMs, encodingMs, decodingMs } },
-      [logits.buffer, raw.buffer])
-  } finally {
-    coords.dispose()
-    types.dispose()
-    prior.dispose()
-    present.dispose()
-  }
+    self.postMessage({ request, result: { logits, raw, side, correctionSatisfied, imageSize, region, assets, backend, startupMs, encodingMs, decodingMs,
+      diagnostics: selection.diagnostics, selectedCandidate: selection.candidate } }, [logits.buffer, raw.buffer])
+  } finally { coords.dispose(); types.dispose(); prior.dispose(); present.dispose() }
 }
-
 self.onmessage = async ({ data }) => {
   try {
-    if (data.bitmap) {
-      await initialize(data)
-      await encode(data)
-    }
+    if (data.bitmap) { await initialize(data); await encode(data) }
     await predict(data)
   } catch (error) {
     publish(data.request, { error: error.message, stage: embedding ? 'prediction' : 'initialization' })
-  } finally {
-    data.bitmap?.close()
-  }
+  } finally { data.bitmap?.close() }
 }
