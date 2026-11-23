@@ -1,4 +1,4 @@
-import { containsPrompt, FULL_IMAGE, guidedRegion, modelPrompts, relativePrompts, resizedImage, SAM_SIZE, selectMask } from './mobileSamGeometry.js'
+import { containsPrompt, FULL_IMAGE, guideBox, guidedRegion, modelPrompts, NO_OBJECT, prefersMask, relativePrompts, resizedImage, SAM_SIZE, selectMask } from './mobileSamGeometry.js'
 
 let ort
 let encoder
@@ -120,7 +120,7 @@ async function encode({ request, bitmap, box, points, fullImage }) {
 }
 async function predict({ request, points: rawPoints, box: rawBox, previous, refining }) {
   publish(request, { progress: { step: 'decode' } })
-  const { points, box } = relativePrompts(rawPoints, rawBox, region)
+  const { points, box } = relativePrompts(rawPoints, guideBox(rawPoints, rawBox), region)
   const { coordinates, labels } = modelPrompts(points, box, imageSize)
   const coords = new ort.Tensor('float32', coordinates, [1, labels.length, 2])
   const types = new ort.Tensor('float32', labels, [1, labels.length])
@@ -136,16 +136,19 @@ async function predict({ request, points: rawPoints, box: rawBox, previous, refi
       const selection = selectMask(result.masks.data, result.scores.data, side, points, box, imageSize,
         previous?.logits, correction, correction ? points.length - 1 : undefined, diagnostics)
       return { ...selection, side, diagnostics }
+    } catch (error) {
+      if (error.message !== NO_OBJECT) throw error
     } finally { for (const tensor of Object.values(result)) tensor.dispose() }
   }
   try {
     const start = performance.now()
     let selection = await candidate()
-    if (previous && !selection.correctionSatisfied) {
+    if (previous && !selection?.correctionSatisfied) {
       present.data[0] = 0
       const alternate = await candidate()
-      if (alternate.score > selection.score) selection = alternate
+      if (alternate && prefersMask(alternate, selection)) selection = alternate
     }
+    if (!selection) throw new Error(NO_OBJECT)
     const decodingMs = Math.round(performance.now() - start)
     const { logits, raw, side, correctionSatisfied } = selection
     self.postMessage({ request, result: { logits, raw, side, correctionSatisfied, imageSize, region, assets, backend, startupMs, encodingMs, decodingMs,

@@ -8,12 +8,12 @@ const origin = 'http://127.0.0.1:4178'
 const chrome = 'C:/Program Files/Google/Chrome/Application/chrome.exe'
 const executablePath = process.env.CHROME_PATH || (existsSync(chrome) ? chrome : undefined)
 const original = process.argv.includes('--original')
-const originalPath = resolve('test-fixtures/almofada-peixes.jpeg')
+const inputPath = resolve(original ? 'test-fixtures/almofada-peixes.jpeg' : 'test-fixtures/mobilesam-sala-cc0.jpg')
 const output = resolve(original ? '.tmp/mobilesam-acceptance' : '.tmp/mobilesam-benchmark')
 const artifacts = await readdir('dist-pwa/assets')
 const workerPath = '/assets/' + artifacts.find((file) => /^mobileSam\.worker-.*\.js$/.test(file))
-const photoPath = original ? '/benchmark-original.jpeg' : '/assets/' + artifacts.find((file) => /^ambiente-.*\.jpg$/.test(file))
-if (original && !existsSync(originalPath)) throw new Error('A foto original precisa estar em test-fixtures/almofada-peixes.jpeg.')
+const photoPath = '/benchmark-input.jpeg'
+if (!existsSync(inputPath)) throw new Error('Foto de benchmark indisponível em ' + inputPath)
 const geometry = await readFile('src/services/mobileSamGeometry.js', 'utf8')
 await mkdir(output, { recursive: true })
 const child = spawn(process.execPath, ['node_modules/vite/bin/vite.js', 'preview', '--mode', 'pwa',
@@ -35,10 +35,10 @@ async function benchmark(name, backend, args) {
     const page = await browser.newPage()
     await page.route(origin + '/benchmark', (route) => route.fulfill({ contentType: 'text/html', body: '<meta charset="utf-8">' }))
     await page.route(origin + '/benchmark-geometry.js', (route) => route.fulfill({ contentType: 'text/javascript', body: geometry }))
-    if (original) await page.route(origin + photoPath, (route) => route.fulfill({ path: originalPath, contentType: 'image/jpeg' }))
+    await page.route(origin + photoPath, (route) => route.fulfill({ path: inputPath, contentType: 'image/jpeg' }))
     await page.goto(origin + '/benchmark')
     const result = await page.evaluate(async ({ backend, workerPath, photoPath, original }) => {
-      const { maskPolygons } = await import('/benchmark-geometry.js')
+      const { samAlpha, samLogitAt } = await import('/benchmark-geometry.js')
       const image = await globalThis.createImageBitmap(await (await fetch(photoPath)).blob())
       const normalized = (x, y, type) => ({ x: x / image.width, y: y / image.height, type })
       const positive = normalized(...(original ? [430, 936] : [289, 791]), 'positive')
@@ -82,7 +82,8 @@ async function benchmark(name, backend, args) {
       try {
         const first = await predict([positive])
         const second = await predict([positive, ...negatives], first)
-        const polygons = maskPolygons(second.logits, second.side, second.imageSize, image, second.region)
+        const guideOnly = original ? await predict([]) : undefined
+        const boundaryCorrection = original ? await predict([positive, negatives.at(-1)], first) : undefined
         const [cropX, cropY, cropWidth, cropHeight] = original ? [0, 510, 900, 875] : [166, 720, 240, 172]
         const previewWidth = original ? 540 : 240
         const previewHeight = Math.round(cropHeight * previewWidth / cropWidth)
@@ -93,18 +94,24 @@ async function benchmark(name, backend, args) {
         context.fillStyle = '#263745'
         context.fillRect(0, 0, panel.width, panel.height)
         context.drawImage(image, cropX, cropY, cropWidth, cropHeight, 0, 0, previewWidth, previewHeight)
-        const crop = globalThis.document.createElement('canvas')
-        crop.width = cropWidth
-        crop.height = cropHeight
-        const pixels = crop.getContext('2d')
-        for (const polygon of polygons) {
-          polygon.forEach(({ x, y }, index) => {
-            if (index) pixels.lineTo(x - cropX, y - cropY)
-            else pixels.moveTo(x - cropX, y - cropY)
-          })
-          pixels.closePath()
+        function render(result) {
+          const crop = globalThis.document.createElement('canvas')
+          crop.width = cropWidth
+          crop.height = cropHeight
+          const pixels = crop.getContext('2d')
+          const raster = samAlpha(result.logits, result.side, result.imageSize, image, result.region)
+          const rows = Math.max(1, Math.floor(256_000 / raster.width))
+          for (let y = 0; y < raster.height; y += rows) {
+            const band = pixels.createImageData(raster.width, Math.min(rows, raster.height - y))
+            raster.writeAlpha(band.data, y)
+            pixels.putImageData(band, raster.x - cropX, raster.y - cropY + y)
+          }
+          pixels.globalCompositeOperation = 'source-in'
+          pixels.drawImage(image, -cropX, -cropY)
+          return crop
         }
-        pixels.fill('evenodd')
+        const crop = render(second)
+        const pixels = crop.getContext('2d')
         const alpha = (x, y) => pixels.getImageData(x - cropX, y - cropY, 1, 1).data[3]
         const samples = original ? {
           peixeSuperior: alpha(619, 726), peixeCentral: alpha(490, 866), peixeInferior: alpha(601, 1054),
@@ -115,14 +122,19 @@ async function benchmark(name, backend, args) {
           almofadaVizinha: alpha(168, 802),
         }
         const initialInterior = original ? [[619, 726], [490, 866], [601, 1054], [430, 945]].map(([x, y]) => {
-          const column = Math.floor((x / image.width - first.region.x) / first.region.width * first.imageSize.width * first.side / 1024)
-          const row = Math.floor((y / image.height - first.region.y) / first.region.height * first.imageSize.height * first.side / 1024)
-          return first.logits[row * first.side + column] > 0
+          return samLogitAt(first.logits, first.side, first.imageSize, {
+            x: (x / image.width - first.region.x) / first.region.width,
+            y: (y / image.height - first.region.y) / first.region.height,
+          }) > 0
         }) : undefined
-        pixels.globalCompositeOperation = 'source-in'
-        pixels.drawImage(image, -cropX, -cropY)
+        function previewData(result) {
+          return result && render(result).toDataURL().split(',')[1]
+        }
         context.drawImage(crop, previewWidth, 0, previewWidth, previewHeight)
         return { initial: summarize(first), correction: summarize(second), adapter: adapterInfo, initialInterior, samples,
+          initialCandidates: first.diagnostics, correctionCandidates: second.diagnostics, guideOnlyCandidates: guideOnly?.diagnostics,
+          initialCutout: original ? previewData(first) : undefined, guideCutout: previewData(guideOnly),
+          boundaryCutout: previewData(boundaryCorrection),
           preview: panel.toDataURL().split(',')[1], cutout: original ? crop.toDataURL().split(',')[1] : undefined }
       } catch (error) {
         return { error: error.message, adapter: adapterInfo }
@@ -131,9 +143,12 @@ async function benchmark(name, backend, args) {
         image.close()
       }
     }, { backend, workerPath, photoPath, original })
-    const { preview, cutout, ...metrics } = result
+    const { preview, cutout, initialCutout, guideCutout, boundaryCutout, ...metrics } = result
     if (preview) await writeFile(resolve(output, name + '.png'), Buffer.from(preview, 'base64'))
     if (cutout) await writeFile(resolve(output, name + '-recorte.png'), Buffer.from(cutout, 'base64'))
+    if (initialCutout) await writeFile(resolve(output, name + '-inicial.png'), Buffer.from(initialCutout, 'base64'))
+    if (guideCutout) await writeFile(resolve(output, name + '-guia.png'), Buffer.from(guideCutout, 'base64'))
+    if (boundaryCutout) await writeFile(resolve(output, name + '-uma-correcao.png'), Buffer.from(boundaryCutout, 'base64'))
     return { name, ...metrics }
   } finally {
     await browser.close()

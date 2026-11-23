@@ -1,5 +1,6 @@
 export const SAM_SIZE = 1024
 export const FULL_IMAGE = { x: 0, y: 0, width: 1, height: 1 }
+export const NO_OBJECT = 'O modelo não encontrou um objeto. Toque no centro do objeto ou indique um contorno aproximado.'
 const LABELS = { negative: 0, positive: 1 }
 
 export function resizedImage(width, height) {
@@ -89,6 +90,12 @@ export function updatePrompt(points, point, frame) {
 
 export function bestMask(logits, scores, side, points, box, size) {
   return selectMask(logits, scores, side, points, box, size).logits
+}
+
+export function prefersMask(candidate, previous) {
+  if (!previous) return true
+  if (candidate.correctionSatisfied !== previous.correctionSatisfied) return candidate.correctionSatisfied
+  return candidate.score > previous.score
 }
 
 function promptIndex(point, side, size, width, height) {
@@ -240,13 +247,12 @@ export function selectMask(
     let correctionSatisfied = !correction
 
     points.forEach(({ type }, index) => {
-      const satisfied =
-        (mask[indices[index]] > 0) === (type === 'positive')
+      const satisfied = (samLogitAt(mask, side, size, points[index]) > 0) === (type === 'positive')
 
       if (index === latest) correctionSatisfied = satisfied
 
       if (!satisfied) {
-        penalty += correction && index === latest ? 6 : 2
+        penalty += 2
       }
     })
 
@@ -271,15 +277,12 @@ export function selectMask(
       correctionSatisfied,
     })
 
-    if (!best || score > best.score) {
-      best = { logits: mask, raw, score, correctionSatisfied, candidate }
-    }
+    const selection = { logits: mask, raw, score, correctionSatisfied, candidate }
+    if (prefersMask(selection, best)) best = selection
   }
 
   if (!best) {
-    throw new Error(
-      'O modelo não encontrou um objeto. Toque no centro do objeto ou indique um contorno aproximado.',
-    )
+    throw new Error(NO_OBJECT)
   }
 
   return { ...best, raw: best.raw.slice() }
@@ -336,305 +339,161 @@ function keepObjectComponents(mask, side, width, height, indices, points) {
 
   if (!keep.size) keep.add(largest)
 
-  return Float32Array.from(mask, (value, index) =>
-    value > 0 && !keep.has(labels[index]) ? -value : value,
-  )
-}
-
-// Remove narrow background attachments from the displayed contour only.
-// The raw model logits and interactive refinement remain unchanged.
-function cleanContourMask(logits, side, width, height) {
-  const count = width * height
-  if (count < 100) return logits
-
-  const inside = new Uint8Array(side * side)
-  const eroded = new Uint8Array(side * side)
-  const opened = new Uint8Array(side * side)
-
+  // Upsampling before unpadding still reads the adjoining logit samples.
+  const result = new Float32Array(mask)
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       const index = y * side + x
-      inside[index] = logits[index] > 0 ? 1 : 0
+      if (mask[index] > 0 && !keep.has(labels[index])) result[index] = -mask[index]
     }
   }
-
-  // A two-pixel-radius opening breaks thin bridges to background fragments.
-  const radius = 2
-  for (let y = radius; y < height - radius; y++) {
-    for (let x = radius; x < width - radius; x++) {
-      let complete = true
-      for (let dy = -radius; dy <= radius && complete; dy++) {
-        for (let dx = -radius; dx <= radius; dx++) {
-          if (dx * dx + dy * dy > radius * radius) continue
-          if (!inside[(y + dy) * side + x + dx]) {
-            complete = false
-            break
-          }
-        }
-      }
-      if (complete) eroded[y * side + x] = 1
-    }
-  }
-
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      let filled = false
-      for (let dy = -radius; dy <= radius && !filled; dy++) {
-        const ny = y + dy
-        if (ny < 0 || ny >= height) continue
-        for (let dx = -radius; dx <= radius; dx++) {
-          const nx = x + dx
-          if (nx < 0 || nx >= width || dx * dx + dy * dy > radius * radius) continue
-          if (eroded[ny * side + nx]) {
-            filled = true
-            break
-          }
-        }
-      }
-      if (filled) opened[y * side + x] = 1
-    }
-  }
-
-  // Retain the largest connected area after narrow bridges are removed.
-  const seen = new Uint8Array(side * side)
-  const queue = new Int32Array(side * side)
-  let largest = []
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const start = y * side + x
-      if (!opened[start] || seen[start]) continue
-      const component = []
-      let head = 0
-      let tail = 0
-      queue[tail++] = start
-      seen[start] = 1
-      while (head < tail) {
-        const index = queue[head++]
-        component.push(index)
-        const cx = index % side
-        const cy = Math.floor(index / side)
-        for (const next of [
-          cx > 0 ? index - 1 : -1,
-          cx + 1 < width ? index + 1 : -1,
-          cy > 0 ? index - side : -1,
-          cy + 1 < height ? index + side : -1,
-        ]) {
-          if (next < 0 || seen[next] || !opened[next]) continue
-          seen[next] = 1
-          queue[tail++] = next
-        }
-      }
-      if (component.length > largest.length) largest = component
-    }
-  }
-
-  // If the opening removes too much, keep the original segmentation.
-  let originalCount = 0
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) originalCount += inside[y * side + x]
-  }
-  if (!originalCount || largest.length < originalCount * 0.65) return logits
-
-  const cleaned = Float32Array.from(logits)
-  const keep = new Uint8Array(side * side)
-  for (const index of largest) keep[index] = 1
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const index = y * side + x
-      if (!keep[index]) cleaned[index] = -Math.max(0.5, Math.abs(cleaned[index]))
-      else cleaned[index] = Math.max(0.5, cleaned[index])
-    }
-  }
-  return cleaned
+  return result
 }
 
-// Smooth only the contour input, leaving AI mask selection unchanged.
-function smoothContourLogits(logits, side, width, height) {
-  const output = new Float32Array(logits)
-
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      let sum = 0
-      let weightSum = 0
-
-      for (let dy = -1; dy <= 1; dy++) {
-        const ny = y + dy
-        if (ny < 0 || ny >= height) continue
-
-        for (let dx = -1; dx <= 1; dx++) {
-          const nx = x + dx
-          if (nx < 0 || nx >= width) continue
-
-          const weight = dx === 0 && dy === 0
-            ? 4
-            : dx === 0 || dy === 0
-              ? 2
-              : 1
-
-          sum += logits[ny * side + nx] * weight
-          weightSum += weight
-        }
-      }
-
-      output[y * side + x] = sum / weightSum
-    }
-  }
-
-  return output
+export function guideBox(points, box) {
+  if (!box) return undefined
+  const region = { x: box.x, y: box.y, width: box.right - box.x, height: box.bottom - box.y }
+  return points.some((point) => point.type === 'positive' && !containsPrompt(region, point)) ? undefined : box
 }
 
-// Trace an iso-contour through the model logits.
-export function maskPolygons(
-  logits, side, size, frame, region = FULL_IMAGE,
-) {
-  const validWidth = Math.ceil(size.width * side / SAM_SIZE)
-  const validHeight = Math.ceil(size.height * side / SAM_SIZE)
+function axisSamples(count, coordinate, length) {
+  const low = new Int32Array(count)
+  const high = new Int32Array(count)
+  const fraction = new Float32Array(count)
+  const interior = new Uint8Array(count)
+  for (let index = 0; index < count; index++) {
+    const raw = coordinate(index)
+    const value = Math.min(length - 1, Math.max(0, raw))
+    low[index] = Math.floor(value)
+    high[index] = Math.min(length - 1, low[index] + 1)
+    fraction[index] = value - low[index]
+    interior[index] = raw >= 0 && raw <= length - 1
+  }
+  return { low, high, fraction, interior }
+}
 
-  const cleanedLogits = cleanContourMask(
-    logits, side, validWidth, validHeight,
+function interpolate(a, b, ratio) {
+  return a + (b - a) * ratio
+}
+
+function gridSample(values, side, x, y) {
+  const left = Math.min(side - 1, Math.max(0, x))
+  const top = Math.min(side - 1, Math.max(0, y))
+  const x0 = Math.floor(left)
+  const y0 = Math.floor(top)
+  const x1 = Math.min(side - 1, x0 + 1)
+  const y1 = Math.min(side - 1, y0 + 1)
+  return interpolate(
+    interpolate(values[y0 * side + x0], values[y0 * side + x1], left - x0),
+    interpolate(values[y1 * side + x0], values[y1 * side + x1], left - x0),
+    top - y0,
   )
-  const smoothLogits = smoothContourLogits(
-    cleanedLogits, side, validWidth, validHeight,
+}
+
+export function samLogitAt(values, side, size, point) {
+  const x = Math.max(0, Math.min(size.width - 1, point.x * size.width - 0.5))
+  const y = Math.max(0, Math.min(size.height - 1, point.y * size.height - 0.5))
+  const scale = side / SAM_SIZE
+  const x0 = Math.floor(x)
+  const y0 = Math.floor(y)
+  const at = (column, row) => gridSample(values, side,
+    (Math.min(size.width - 1, column) + 0.5) * scale - 0.5,
+    (Math.min(size.height - 1, row) + 0.5) * scale - 0.5)
+  return interpolate(
+    interpolate(at(x0, y0), at(x0 + 1, y0), x - x0),
+    interpolate(at(x0, y0 + 1), at(x0 + 1, y0 + 1), x - x0),
+    y - y0,
   )
-
-  const vertex = (x, y) => {
-    const inPhoto =
-      x >= 0 && y >= 0 &&
-      x < validWidth && y < validHeight
-
-    const borderX = Math.max(
-      0, Math.min(validWidth - 1, x),
-    )
-    const borderY = Math.max(
-      0, Math.min(validHeight - 1, y),
-    )
-
-    const value = smoothLogits[borderY * side + borderX]
-
-    return {
-      x,
-      y,
-      value: inPhoto
-        ? value
-        : -Math.max(0.01, Math.abs(value)),
-    }
-  }
-
-  const edges = new Map()
-
-  function cross(a, b) {
-    const key = [a.x, a.y, b.x, b.y].join(',')
-    let edge = edges.get(key)
-
-    if (!edge) {
-      const denominator = a.value - b.value
-      const t = denominator === 0
-        ? 0.5
-        : a.value / denominator
-
-      const x =
-        (a.x + 0.5 + t * (b.x - a.x)) *
-        SAM_SIZE / side
-
-      const y =
-        (a.y + 0.5 + t * (b.y - a.y)) *
-        SAM_SIZE / side
-
-      edge = {
-        point: {
-          x: (
-            region.x +
-            Math.max(0, Math.min(1, x / size.width)) *
-            region.width
-          ) * frame.width,
-
-          y: (
-            region.y +
-            Math.max(0, Math.min(1, y / size.height)) *
-            region.height
-          ) * frame.height,
-        },
-        neighbors: [],
-      }
-
-      edges.set(key, edge)
-    }
-
-    return edge
-  }
-
-  function join(a, b) {
-    a.neighbors.push(b)
-    b.neighbors.push(a)
-  }
-
-  for (let y = -1; y < validHeight; y++) {
-    for (let x = -1; x < validWidth; x++) {
-      const [a, b, c, d] = [
-        vertex(x, y),
-        vertex(x + 1, y),
-        vertex(x + 1, y + 1),
-        vertex(x, y + 1),
-      ]
-
-      const pairs = [
-        [a, b],
-        [b, c],
-        [d, c],
-        [a, d],
-      ]
-
-      const crossings = pairs
-        .filter(([left, right]) =>
-          (left.value > 0) !== (right.value > 0),
-        )
-        .map(([left, right]) => cross(left, right))
-
-      if (crossings.length === 2) {
-        join(...crossings)
-      }
-
-      if (crossings.length === 4) {
-        const center =
-          a.value + b.value + c.value + d.value > 0
-
-        if (center === (a.value > 0)) {
-          join(crossings[0], crossings[1])
-          join(crossings[2], crossings[3])
-        } else {
-          join(crossings[0], crossings[3])
-          join(crossings[1], crossings[2])
-        }
-      }
-    }
-  }
-
-  const visited = new Set()
-  const polygons = []
-
-  for (const first of edges.values()) {
-    if (visited.has(first)) continue
-
-    const path = []
-    let previous
-    let current = first
-
-    while (current && !visited.has(current)) {
-      visited.add(current)
-      path.push(current.point)
-
-      const next = current.neighbors.find(
-        (edge) => edge !== previous,
+}
+// The official SAM path resizes the logits to the padded square before removing the padding.
+export function unpadLogits(logits, side, { width, height }) {
+  const scale = side / SAM_SIZE
+  const horizontal = axisSamples(width, (x) => (x + 0.5) * scale - 0.5, side)
+  const vertical = axisSamples(height, (y) => (y + 0.5) * scale - 0.5, side)
+  const result = new Float32Array(width * height)
+  for (let y = 0; y < height; y++) {
+    const top = vertical.low[y] * side
+    const bottom = vertical.high[y] * side
+    for (let x = 0; x < width; x++) {
+      const left = horizontal.low[x]
+      const right = horizontal.high[x]
+      const ratio = horizontal.fraction[x]
+      result[y * width + x] = interpolate(
+        interpolate(logits[top + left], logits[top + right], ratio),
+        interpolate(logits[bottom + left], logits[bottom + right], ratio),
+        vertical.fraction[y],
       )
-
-      previous = current
-      current = next
     }
+  }
+  return result
+}
 
-    if (current === first && path.length >= 3) {
-      polygons.push(path)
+function projectionAxis(origin, extent, first, last, length, frameLength) {
+  const scale = length / extent
+  const start = Math.max(0, Math.floor(origin), Math.floor(origin + (first - 1) / scale))
+  const end = Math.min(frameLength, Math.ceil(origin + extent), Math.ceil(origin + (last + 2) / scale))
+  const samples = axisSamples(end - start, (index) => (start + index + 0.5 - origin) * scale - 0.5, length)
+  return {
+    start, end, scale, ...samples,
+    firstCoverage: Math.min(1, start + 1 - origin),
+    lastCoverage: Math.min(1, origin + extent - end + 1),
+  }
+}
+
+function regionCoverage(axis, index) {
+  if (axis.end - axis.start === 1) return Math.max(0, axis.firstCoverage + axis.lastCoverage - 1)
+  if (index === 0) return axis.firstCoverage
+  if (index === axis.end - axis.start - 1) return axis.lastCoverage
+  return 1
+}
+
+// Rasterize only the occupied source rectangle. A one-pixel footprint antialiases the zero level set.
+export function samAlpha(logits, side, size, frame, region = FULL_IMAGE) {
+  const { width, height } = size
+  const values = unpadLogits(logits, side, size)
+  let left = width
+  let top = height
+  let right = -1
+  let bottom = -1
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      if (!(values[y * width + x] > 0)) continue
+      left = Math.min(left, x)
+      top = Math.min(top, y)
+      right = Math.max(right, x)
+      bottom = Math.max(bottom, y)
+    }
+  }
+  if (right < left) return undefined
+  const x = projectionAxis(region.x * frame.width, region.width * frame.width, left, right, width, frame.width)
+  const y = projectionAxis(region.y * frame.height, region.height * frame.height, top, bottom, height, frame.height)
+
+  function writeAlpha(rgba, firstRow) {
+    const stride = x.end - x.start
+    const rows = rgba.length / (stride * 4)
+    for (let row = 0; row < rows; row++) {
+      const cy = firstRow + row
+      const upper = y.low[cy] * width
+      const lower = y.high[cy] * width
+      const fy = y.fraction[cy]
+      const clipY = regionCoverage(y, cy)
+      for (let cx = 0; cx < stride; cx++) {
+        const a = values[upper + x.low[cx]]
+        const b = values[upper + x.high[cx]]
+        const c = values[lower + x.low[cx]]
+        const d = values[lower + x.high[cx]]
+        const fx = x.fraction[cx]
+        const upperValue = interpolate(a, b, fx)
+        const lowerValue = interpolate(c, d, fx)
+        const value = interpolate(upperValue, lowerValue, fy)
+        const dx = x.interior[cx] ? interpolate(b - a, d - c, fy) * x.scale : 0
+        const dy = y.interior[cy] ? (lowerValue - upperValue) * y.scale : 0
+        const footprint = Math.abs(dx) + Math.abs(dy)
+        const coverage = footprint ? Math.max(0, Math.min(1, 0.5 + value / footprint)) : Number(value > 0)
+        rgba[(row * stride + cx) * 4 + 3] = Math.round(255 * coverage * clipY * regionCoverage(x, cx))
+      }
     }
   }
 
-  return polygons
+  return { x: x.start, y: y.start, width: x.end - x.start, height: y.end - y.start, writeAlpha }
 }

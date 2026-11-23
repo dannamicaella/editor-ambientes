@@ -5,9 +5,9 @@ import { Check, Eraser, Hand, Lasso, Minus, Paintbrush, Plus, Redo2, RotateCcw, 
 import { useCanvasViewport } from '../composables/useCanvasViewport.js'
 import { useMaskHistory } from '../composables/useMaskHistory.js'
 import { context2d, createCanvas, decodeImage, releaseImage } from '../services/images.js'
-import { contourMask, contourPath, contourRegion, drawMasked, finishMask, polygonMask, savedMask } from '../services/masks.js'
+import { contourMask, contourPath, contourRegion, drawMasked, finishMask, modelMask, savedMask } from '../services/masks.js'
 import { createMobileSam, verifyAiCache } from '../services/mobileSam.js'
-import { maskPolygons, updatePrompt } from '../services/mobileSamGeometry.js'
+import { updatePrompt } from '../services/mobileSamGeometry.js'
 import { clamp, contain, pointerPair, pointerPosition } from '../utils/geometry.js'
 
 const props = defineProps({ input: { type: Object, required: true } })
@@ -354,89 +354,6 @@ function boxPrompt() {
   return { x: x / frame.width, y: y / frame.height, right: (x + width) / frame.width, bottom: (y + height) / frame.height }
 }
 
-// Verifica se um ponto normalizado está dentro do contorno desenhado.
-function insideGuide(x, y) {
-  const guide = points.value
-  let inside = false
-  for (let i = 0, j = guide.length - 1; i < guide.length; j = i++) {
-    const ax = guide[i].x / frame.width
-    const ay = guide[i].y / frame.height
-    const bx = guide[j].x / frame.width
-    const by = guide[j].y / frame.height
-    if ((ay > y) !== (by > y) && x < (bx - ax) * (y - ay) / (by - ay) + ax) inside = !inside
-  }
-  return inside
-}
-
-// Distância normalizada de um ponto ao traçado, útil para evitar
-// indicações automáticas sobre a borda do objeto.
-function guideDistance(x, y) {
-  const guide = points.value
-  let nearest = Infinity
-  for (let i = 0; i < guide.length; i++) {
-    const a = guide[i]
-    const b = guide[(i + 1) % guide.length]
-    const ax = a.x / frame.width
-    const ay = a.y / frame.height
-    const dx = (b.x - a.x) / frame.width
-    const dy = (b.y - a.y) / frame.height
-    const t = clamp(((x - ax) * dx + (y - ay) * dy) / (dx * dx + dy * dy || 1), 0, 1)
-    nearest = Math.min(nearest, Math.hypot(x - ax - t * dx, y - ay - t * dy))
-  }
-  return nearest
-}
-
-// A guia é uma região aproximada, não uma máscara perfeita. O MobileSAM
-// recebe um ponto dentro dela e exemplos de fundo FORA do contorno.
-function guidePrompts(box, userPrompts) {
-  if (!box || !validContour.value) return userPrompts
-
-  const generated = []
-  const width = box.right - box.x
-  const height = box.bottom - box.y
-  const scale = Math.max(0.001, Math.min(width, height))
-  const hasPositive = userPrompts.some((point) => point.type === 'positive')
-
-  // Escolhe um ponto realmente interno e afastado das bordas da guia.
-  if (!hasPositive) {
-    let best = null
-    for (let iy = 1; iy <= 9; iy++) {
-      for (let ix = 1; ix <= 9; ix++) {
-        const x = box.x + width * ix / 10
-        const y = box.y + height * iy / 10
-        if (!insideGuide(x, y)) continue
-        const distance = guideDistance(x, y)
-        if (!best || distance > best.distance) best = { x, y, distance }
-      }
-    }
-    if (best) generated.push({ x: best.x, y: best.y, type: 'positive' })
-  }
-
-  // Amostras de fundo próximas à guia, mas estritamente fora dela.
-  // Nunca adiciona pontos negativos dentro da área que a pessoa desenhou.
-  const margin = Math.max(0.015, scale * 0.12)
-  const candidates = [
-    [box.x - margin, (box.y + box.bottom) / 2],
-    [box.right + margin, (box.y + box.bottom) / 2],
-    [(box.x + box.right) / 2, box.y - margin],
-    [(box.x + box.right) / 2, box.bottom + margin],
-    [box.x - margin, box.y - margin],
-    [box.right + margin, box.y - margin],
-    [box.right + margin, box.bottom + margin],
-    [box.x - margin, box.bottom + margin],
-  ]
-
-  for (const [x, y] of candidates) {
-    if (x <= 0 || x >= 1 || y <= 0 || y >= 1 || insideGuide(x, y)) continue
-    if (guideDistance(x, y) < margin * 0.5) continue
-    if (userPrompts.some((point) => Math.hypot(point.x - x, point.y - y) < margin)) continue
-    generated.push({ x, y, type: 'negative' })
-  }
-
-  // Mantém as indicações do usuário no fim, inclusive para o refinamento.
-  return [...generated.slice(0, Math.max(0, 16 - userPrompts.length)), ...userPrompts].slice(-16)
-}
-
 function reportProgress(progress) {
   const messages = {
     download: 'Carregando o modelo local…', encode: 'Analisando a fotografia…',
@@ -446,90 +363,33 @@ function reportProgress(progress) {
   percent.value = progress.step === 'download' ? Math.round(100 * progress.loaded / progress.total) : null
 }
 
-// A guia limita a máscara final; o modelo continua responsável pelo contorno interno.
-// Aplicar no canvas da máscara preserva o recorte em resolução original.
-function maskInsideGuide(polygons, guide) {
-  const mask = polygonMask(frame, polygons)
-  if (!guide || guide.length < 3) return mask
-
-  const context = context2d(mask.canvas)
-  context.save()
-  context.globalCompositeOperation = 'destination-in'
-  context.beginPath()
-  guide.forEach(({ x, y }, index) => {
-    if (index === 0) context.moveTo(x - mask.x, y - mask.y)
-    else context.lineTo(x - mask.x, y - mask.y)
-  })
-  context.closePath()
-  context.fillStyle = '#000'
-  context.fill()
-  context.restore()
-  return mask
-}
-
 function applyResult(result, task) {
-  const { logits, side, imageSize, region, backend } = result
-  let selected = 0
-  let minX = side
-  let minY = side
-  let maxX = -1
-  let maxY = -1
-  for (let y = 0; y < side; y++) {
-    for (let x = 0; x < side; x++) {
-      if (logits[y * side + x] <= 0) continue
-      selected++
-      minX = Math.min(minX, x)
-      minY = Math.min(minY, y)
-      maxX = Math.max(maxX, x)
-      maxY = Math.max(maxY, y)
-    }
+  if (task.label && accepted && !result.correctionSatisfied) {
+    showOriginal.value = false
+    feedback.value = task.label === 'positive'
+      ? 'A IA não conseguiu incluir essa área. O recorte anterior foi mantido.'
+      : 'A IA não conseguiu excluir essa área. O recorte anterior foi mantido.'
+    return
   }
-  const polygons = maskPolygons(result.logits, result.side, result.imageSize, frame, result.region)
-  let polygonMinX = Infinity
-  let polygonMinY = Infinity
-  let polygonMaxX = -Infinity
-  let polygonMaxY = -Infinity
-  for (const polygon of polygons) {
-    for (const point of polygon) {
-      polygonMinX = Math.min(polygonMinX, point.x)
-      polygonMinY = Math.min(polygonMinY, point.y)
-      polygonMaxX = Math.max(polygonMaxX, point.x)
-      polygonMaxY = Math.max(polygonMaxY, point.y)
-    }
-  }
-  const diagnostic = {
-    backend,
+
+  history.setBase(() => modelMask(frame, result), phase.value !== 'mask')
+  const { x, y, width, height } = history.mask
+  diagnosticText.value = JSON.stringify({
+    backend: result.backend,
     maskAlternatives: result.diagnostics ?? [],
     selectedAlternative: result.selectedCandidate ?? null,
     frame,
     image: { width: image.width, height: image.height },
-    imageSize,
-    region,
-    maskSide: side,
-    selectedPixels: selected,
-    maskBounds: selected ? { minX, minY, maxX, maxY } : null,
-    polygonCount: polygons.length,
-    polygonBounds: polygons.length ? {
-      minX: Math.round(polygonMinX),
-      minY: Math.round(polygonMinY),
-      maxX: Math.round(polygonMaxX),
-      maxY: Math.round(polygonMaxY),
-    } : null,
-  }
-  console.log('DIAGNOSTICO MOBILE SAM:', diagnostic)
-  diagnosticText.value = JSON.stringify(diagnostic, null, 2)
-  history.setBase(() => maskInsideGuide(polygons, task.guide), phase.value !== 'mask')
+    imageSize: result.imageSize,
+    region: result.region,
+    maskSide: result.side,
+    rasterBounds: { x, y, width, height },
+  }, null, 2)
   if (task.label && accepted) {
     const before = accepted.result
     const sameRegion = ['x', 'y', 'width', 'height'].every((key) => result.region[key] === before.region[key])
     const changed = !sameRegion || result.logits.some((value, index) => (value > 0) !== (before.logits[index] > 0))
-    if (result.correctionSatisfied === false) {
-      feedback.value = task.label === 'positive'
-        ? 'A IA não conseguiu incluir essa área. Toque mais para dentro ou use Restaurar.'
-        : 'A IA não conseguiu excluir essa área. Marque outro ponto ou use Apagar.'
-    } else {
-      feedback.value = changed ? 'Recorte atualizado.' : 'Essa área já está como indicada.'
-    }
+    feedback.value = changed ? 'Recorte atualizado.' : 'Essa área já está como indicada.'
   }
   accepted = { ...task, result }
   manualAvailable.value = false
@@ -547,7 +407,7 @@ function applyResult(result, task) {
 async function infer(label) {
   if (!validSelection.value || (busy.value && !running) || pointers.size) return
   const box = boxPrompt()
-  requested = { points: prompts.value, predictPoints: guidePrompts(box, prompts.value), undo: promptUndo.value, box, guide: validContour.value ? points.value.map(({ x, y }) => ({ x, y })) : null, label, key: JSON.stringify([box, guidePrompts(box, prompts.value)]) }
+  requested = { points: prompts.value, undo: promptUndo.value, box, label, key: JSON.stringify([box, prompts.value]) }
   if (running) return
   running = true
   busy.value = 'Preparando a IA local…'
@@ -559,7 +419,7 @@ async function infer(label) {
       try {
         segmenter ??= createMobileSam(image)
         const result = maskSnapshots.get(task.key) ??
-          await segmenter.predict(task.predictPoints, task.box, reportProgress, task.label && accepted?.result)
+          await segmenter.predict(task.points, task.box, reportProgress, task.label && accepted?.result)
         if (!disposed && !requested) applyResult(result, task)
       } catch (error) {
         if (error.name === 'AbortError' || disposed || requested) continue
@@ -596,6 +456,7 @@ function selectMode(useManual, reset = false) {
     segmenter?.dispose()
     segmenter = undefined
     inference.value = undefined
+    diagnosticText.value = ''
     aiCached.value = false
     accepted = undefined
     maskSnapshots.clear()

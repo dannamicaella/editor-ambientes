@@ -1,6 +1,6 @@
 import { containsPrompt } from './mobileSamGeometry.js'
 
-export function createMobileSam(image, preferred = 'auto') {
+export function createMobileSam(image, preferred = 'wasm') {
   const base = new URL('ai/', document.baseURI).href
   let worker
   let waiting
@@ -10,7 +10,7 @@ export function createMobileSam(image, preferred = 'auto') {
   let fullImage = false
   let closed = false
   let request = 0
-  let provider = "wasm"
+  let provider = preferred === 'auto' ? (navigator.gpu ? 'webgpu' : 'wasm') : preferred
 
   function terminate() {
     worker?.terminate()

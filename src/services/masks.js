@@ -1,4 +1,5 @@
 import { context2d, createCanvas, decodeImage, encodeCanvas, releaseImage } from './images.js'
+import { samAlpha } from './mobileSamGeometry.js'
 
 export function contourPath(context, points) {
   context.beginPath()
@@ -37,22 +38,35 @@ function regionCanvas(region) {
 }
 
 export function contourMask(frame, points) {
-  return polygonMask(frame, [points])
-}
-
-export function polygonMask(frame, polygons) {
-  if (!polygons.length) throw new Error('A máscara não contém uma região visível. Ajuste as indicações e tente novamente.')
-  const mask = regionCanvas(contourRegion(polygons.flat(), frame, 1))
+  const mask = regionCanvas(contourRegion(points, frame, 1))
   try {
     const output = context2d(mask.canvas)
     output.translate(-mask.x, -mask.y)
     output.beginPath()
-    for (const polygon of polygons) {
-      traceContour(output, polygon)
-      output.closePath()
-    }
+    traceContour(output, points)
+    output.closePath()
     output.fill('evenodd')
     output.resetTransform()
+    return mask
+  } catch (error) {
+    releaseImage(mask.canvas)
+    throw error
+  }
+}
+
+export function modelMask(frame, { logits, side, imageSize, region }) {
+  const raster = samAlpha(logits, side, imageSize, frame, region)
+  if (!raster) throw new Error('A máscara não contém uma região visível. Ajuste as indicações e tente novamente.')
+  const { writeAlpha, ...bounds } = raster
+  const mask = regionCanvas(bounds)
+  try {
+    const output = context2d(mask.canvas)
+    const rows = Math.max(1, Math.floor(256_000 / mask.width))
+    for (let y = 0; y < mask.height; y += rows) {
+      const band = output.createImageData(mask.width, Math.min(rows, mask.height - y))
+      writeAlpha(band.data, y)
+      output.putImageData(band, 0, y)
+    }
     return mask
   } catch (error) {
     releaseImage(mask.canvas)

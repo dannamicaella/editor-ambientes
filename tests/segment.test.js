@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { bestMask, guidedRegion, maskPolygons, modelPrompts, relativePrompts, resizedImage, selectMask, updatePrompt } from '../src/services/mobileSamGeometry.js'
+import { bestMask, guideBox, guidedRegion, modelPrompts, prefersMask, relativePrompts, resizedImage, samAlpha, samLogitAt, selectMask, unpadLogits, updatePrompt } from '../src/services/mobileSamGeometry.js'
 import { rasterizeContour } from '../src/utils/contour.js'
 
 test('fecha o contorno manual irregular e preserva uma concavidade externa', () => {
@@ -41,11 +41,49 @@ test('usa margem no contorno guia e projeta a máscara de volta ao local exato d
   const { points } = relativePrompts([{ x: 0.5, y: 0.5, type: 'positive' }, { x: 0, y: 0, type: 'negative' }], undefined, region)
   assert.equal(points.length, 1)
   assert(Math.abs(points[0].x - 0.5) <= 0.001)
-  const polygons = maskPolygons(Float32Array.of(1, 1, 1, 1), 2, { width: 1024, height: 1024 },
+  const alpha = samAlpha(Float32Array.of(1, 1, 1, 1), 2, { width: 1024, height: 1024 },
     { width: 1000, height: 1000 }, region)
-  const x = polygons[0].map((point) => point.x)
-  assert.equal(Math.min(...x), region.x * 1000)
-  assert.equal(Math.max(...x), (region.x + region.width) * 1000)
+  assert.equal(alpha.x, region.x * 1000)
+  assert.equal(alpha.width, region.width * 1000)
+  assert.equal(alphaAt(alpha, alpha.x, alpha.y), 255)
+  assert.equal(alphaAt(alpha, alpha.x - 1, alpha.y), 0)
+})
+
+test('caixa guia admite indicação Manter fora da linha e não cria pontos artificiais', () => {
+  const box = { x: 0.25, y: 0.25, right: 0.75, bottom: 0.75 }
+  const size = { width: 683, height: 1024 }
+  const clean = guideBox([], box)
+  assert.deepEqual([...modelPrompts([], clean, size).labels], [2, 3])
+  const point = { x: 0.8, y: 0.5, type: 'positive' }
+  assert.equal(guideBox([point], box), undefined)
+  assert.deepEqual([...modelPrompts([point], guideBox([point], box), size).labels], [1, -1])
+})
+
+test('projeta bordas fracionárias da região sem preencher pixels fora dela', () => {
+  const mask = samAlpha(Float32Array.of(1), 1, { width: 1024, height: 1024 },
+    { width: 20, height: 20 }, { x: 0.075, y: 0.075, width: 0.8, height: 0.8 })
+  assert.equal(alphaAt(mask, 1, 1), 64)
+  assert.equal(alphaAt(mask, 17, 2), 128)
+  assert.equal(alphaAt(mask, 0, 2), 0)
+  assert.equal(alphaAt(mask, 2, 2), 255)
+})
+
+test('a correção explícita tem prioridade sobre escores maiores e permite recorrer sem logits anteriores', () => {
+  const honored = { correctionSatisfied: true, score: -8 }
+  const failed = { correctionSatisfied: false, score: 1 }
+  assert(prefersMask(honored, failed))
+  assert(!prefersMask(failed, honored))
+  assert(prefersMask(honored, undefined))
+})
+
+test('faz a interpolação na grade com padding antes de recortar a área útil', () => {
+  const size = { width: 300, height: 576 }
+  const source = Float32Array.of(1, 9, 3, 11)
+  const image = unpadLogits(source, 2, size)
+  const position = { x: 299.5 / size.width, y: 575.5 / size.height }
+  const expected = 1 + 8 * (299.5 / 512 - 0.5) + 2 * (575.5 / 512 - 0.5)
+  assert(Math.abs(image.at(-1) - expected) < 1e-6)
+  assert(Math.abs(samLogitAt(source, 2, size, position) - expected) < 1e-6)
 })
 
 test('Manter substitui um Remover no mesmo detalhe e repetir o toque não duplica a orientação', () => {
@@ -91,18 +129,37 @@ test('uma correção na borda preserva estampas internas já aceitas e mantém f
   assert(result.correctionSatisfied)
 })
 
-test('contorna logits com coordenadas subpixel, concavidades e furos na resolução original', () => {
+function alphaAt(mask, x, y) {
+  if (x < mask.x || y < mask.y || x >= mask.x + mask.width || y >= mask.y + mask.height) return 0
+  const pixels = new Uint8ClampedArray(mask.width * 4)
+  mask.writeAlpha(pixels, y - mask.y)
+  return pixels[4 * (x - mask.x) + 3]
+}
+
+test('rasteriza alfa na resolução original com concavidades, furos e antialiasing', () => {
   const side = 8
   const logits = new Float32Array(side * side).fill(-1)
   for (let y = 1; y < 6; y++) for (let x = 1; x < 7; x++) logits[y * side + x] = 2
   logits[3 * side + 3] = -2
   for (let y = 4; y < 6; y++) logits[y * side + 6] = -2
   const frame = { width: 320, height: 240 }
-  const polygons = maskPolygons(logits, side, { width: 1024, height: 768 }, frame)
-  const mask = rasterizeContour(polygons[0], frame.width, frame.height)
-  assert.equal(polygons.length, 2)
-  assert(polygons[0].some(({ x, y }) => !Number.isInteger(x) || !Number.isInteger(y)))
-  assert.equal(mask[130 * frame.width + 260], 1)
-  assert.equal(mask[200 * frame.width + 260], 0)
-  assert(polygons[1].every(({ x, y }) => x > 115 && x < 165 && y > 115 && y < 165))
+  const mask = samAlpha(logits, side, { width: 1024, height: 768 }, frame)
+  assert.equal(alphaAt(mask, 225, 135), 255)
+  assert.equal(alphaAt(mask, 260, 195), 0)
+  assert.equal(alphaAt(mask, 140, 140), 0)
+  assert.equal(alphaAt(mask, 100, 140), 255)
+  const values = Array.from({ length: frame.width }, (_, x) => alphaAt(mask, x, 100))
+  assert(values.some((alpha) => alpha > 0 && alpha < 255))
+})
+
+test('preserva apêndices finos e regiões desconectadas da máscara selecionada', () => {
+  const side = 16
+  const logits = new Float32Array(side * side).fill(-1)
+  for (let y = 4; y < 12; y++) for (let x = 3; x < 10; x++) logits[y * side + x] = 3
+  for (let x = 10; x <= 13; x++) logits[8 * side + x] = 3
+  logits[2 * side + 12] = 3
+  const mask = samAlpha(logits, side, { width: 1024, height: 1024 }, { width: 320, height: 320 })
+  assert.equal(alphaAt(mask, 270, 170), 255)
+  assert.equal(alphaAt(mask, 250, 50), 255)
+  assert.equal(alphaAt(mask, 270, 195), 0)
 })
