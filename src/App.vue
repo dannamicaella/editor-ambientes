@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, ref, shallowRef } from 'vue'
+import { defineAsyncComponent, onMounted, ref, shallowRef } from 'vue'
 import { QBtn, QCard, QDialog, QSpinner } from 'quasar'
 import { Check, CircleAlert, X } from '@lucide/vue'
 import HomePage from './pages/HomePage.vue'
@@ -12,6 +12,7 @@ import { deleteProject, duplicateProject, listProjects, openProject, renameProje
 import { canInstall, installApp, offlineStatus, setupPwa } from './services/pwa.js'
 import { createProject } from './composables/useProject.js'
 
+const BackupDialog = defineAsyncComponent(() => import('./components/BackupDialog.vue'))
 const summaries = shallowRef([])
 const editor = shallowRef()
 const loading = ref(true)
@@ -20,6 +21,7 @@ const notice = ref()
 const source = ref(false)
 const help = ref(false)
 const library = ref(false)
+const backup = ref(false)
 const renaming = shallowRef()
 const removing = shallowRef()
 let noticeTimer
@@ -122,9 +124,10 @@ onMounted(() => {
   <EditorPage v-if="editor" :initial="editor" @exit="exit" @notice="notify" />
   <HomePage v-else :projects="summaries" :loading :offline="offlineStatus" :installable="canInstall"
     :inert="!!busy" @new="source = true" @open="reopen" @delete="removing = $event" @help="help = true" @install="install"
-    @duplicate="duplicate" @rename="renaming = $event" @library="library = true" />
+    @duplicate="duplicate" @rename="renaming = $event" @library="library = true" @backup="backup = true" />
   <ImageSource v-model="source" title="Nova montagem" hint="Fotografe ou escolha a imagem que será o fundo da composição." @choose="start" />
   <CutoutLibrary v-if="!editor" v-model="library" />
+  <BackupDialog v-if="backup" v-model="backup" @restored="refresh" />
   <NameDialog :model-value="Boolean(renaming)" :initial-name="renaming?.name" title="Renomear montagem"
     label="Nome da montagem" action="Salvar nome" :save="rename" @update:model-value="!$event && (renaming = undefined)" />
 

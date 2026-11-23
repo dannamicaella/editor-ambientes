@@ -1,12 +1,13 @@
+
 <script setup>
 import { QBtn, QSpinner } from 'quasar'
-import { CircleHelp, Download, FolderOpen, House, Layers3, Plus, Scissors, ShieldCheck } from '@lucide/vue'
+import { Archive, CircleHelp, Download, FolderOpen, House, Layers3, Plus, Scissors, ShieldCheck } from '@lucide/vue'
 import BrandMark from '../components/BrandMark.vue'
 import ProjectCard from '../components/ProjectCard.vue'
 import heroPhoto from '../assets/ambiente.jpg'
 
 defineProps({ projects: Array, loading: Boolean, offline: String, installable: Boolean })
-defineEmits(['new', 'open', 'delete', 'help', 'install', 'duplicate', 'rename', 'library'])
+defineEmits(['new', 'open', 'delete', 'help', 'install', 'duplicate', 'rename', 'library', 'backup'])
 
 function showProjects(event) {
   event.preventDefault()
@@ -24,6 +25,7 @@ function showProjects(event) {
         <a class="nav-item current" href="#" aria-current="page"><House :size="19" /> Início</a>
         <a class="nav-item" href="#montagens" @click="showProjects"><FolderOpen :size="19" /> Minhas montagens</a>
         <button class="nav-item" type="button" @click="$emit('library')"><Scissors :size="19" /> Meus Recortes</button>
+        <button class="nav-item" type="button" @click="$emit('backup')"><Archive :size="19" /> Backup e Restauração</button>
         <button class="nav-item" type="button" @click="$emit('help')"><CircleHelp :size="19" /> Como funciona</button>
       </nav>
       <div class="sidebar-footer"><ShieldCheck :size="19" /><div><strong>Privado por padrão</strong><span>Suas fotos ficam neste dispositivo.</span></div></div>
@@ -42,11 +44,15 @@ function showProjects(event) {
           </button>
         </div>
       </header>
+
       <main class="home-main">
         <div class="page-intro">
           <h1>Editor de Ambientes</h1>
           <p>Combine móveis e objetos nas suas próprias fotos.</p>
-          <QBtn no-caps unelevated class="btn btn-outline mobile-library" @click="$emit('library')"><Scissors :size="17" /> Meus Recortes</QBtn>
+          <div class="mobile-home-actions">
+            <QBtn no-caps unelevated class="btn btn-outline" @click="$emit('library')"><Scissors :size="17" /> Meus Recortes</QBtn>
+            <QBtn no-caps unelevated class="btn btn-outline" @click="$emit('backup')"><Archive :size="17" /> Backup e Restauração</QBtn>
+          </div>
         </div>
 
         <section class="home-hero" aria-labelledby="hero-title">
@@ -80,6 +86,20 @@ function showProjects(event) {
           </div>
         </section>
       </main>
+
+      <footer class="home-footer">
+        © 2026 Editor de Ambientes · Desenvolvido por Danna Micaella
+      </footer>
     </div>
   </div>
 </template>
+
+<style scoped>
+.home-footer {
+  padding: 20px 24px;
+  text-align: center;
+  font-size: 12px;
+  color: #7b827c;
+  border-top: 1px solid #e4e6df;
+}
+</style>

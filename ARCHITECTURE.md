@@ -16,6 +16,7 @@ O Editor de Ambientes é uma SPA estática em Vue 3. Quasar fornece diálogos, b
 | `src/composables/projectModel.js`, `useProject.js`, `history.js` | Estado, histórico e coleta de ativos sem referência |
 | `src/services/projects.js` | Projetos, ativos e miniaturas no IndexedDB |
 | `src/components/CutoutLibrary.vue`, `NameDialog.vue` | Biblioteca de recortes e formulários locais de nomes |
+| `src/services/backup.js`, `src/services/backupContent.js`, `src/components/BackupDialog.vue` | Formato do backup, verificação, comparação de conteúdo e fluxo de restauração |
 | `src/services/export.js`, `src/components/ExportDialog.vue` | Renderização em resolução própria, codificação, download e Web Share |
 | `src/services/pwa.js`, `tools/sw-template.js`, `vite.config.js` | Instalação, geração do precache e verificação de disponibilidade offline |
 
@@ -39,11 +40,19 @@ O MobileSAM usa os pesos oficiais, exportados como codificador TinyViT e decodif
 
 ### Montagens duplicadas e Meus Recortes
 
-O IndexedDB v2 adiciona `media` para os ativos imutáveis e `cutouts` para os nomes, miniaturas PNG e referências da biblioteca. A tabela `assets` mantém as referências por montagem, com um índice para encontrar seus vínculos com `media`. A biblioteca lista só os metadados e as miniaturas e carrega a imagem em tamanho integral ao visualizar ou adicionar um recorte.
+A versão 2 do IndexedDB introduziu `media` para os ativos imutáveis e `cutouts` para os nomes, miniaturas PNG e referências da biblioteca. A tabela `assets` mantém as referências por montagem, com um índice para encontrar seus vínculos com `media`. A biblioteca lista só os metadados e as miniaturas e carrega a imagem em tamanho integral ao visualizar ou adicionar um recorte.
 
 A atualização do banco preserva os registros v1. A abertura interpreta tanto os ativos do formato anterior, armazenados na própria montagem, quanto as novas referências. Ao salvar ou duplicar uma montagem antiga, uma transação converte seus ativos em referências. Duplicar copia os dados editáveis e preserva os mesmos arquivos de imagem e a miniatura, sem recomprimir. As camadas reutilizadas ganham IDs próprios e guardam o nome que tinham ao ser adicionadas.
 
 As exclusões consultam os índices de montagens e de recortes na mesma transação. O ativo compartilhado é removido somente quando perde a última referência persistida. Um editor já aberto conserva seus ativos em memória, inclusive no histórico. Ele pode gravá-los novamente ao salvar, mesmo que uma entrada da biblioteca tenha sido excluída em outra aba.
+
+### Backup e restauração
+
+O `.eabackup` v1 contém um cabeçalho de 48 bytes, um manifesto JSON em UTF‑8 e os blobs originais em sequência. O cabeçalho contém a assinatura `EABACKUP`, a versão e o comprimento JSON em big-endian e o SHA‑256 do manifesto. Cada blob tem comprimento, tipo de imagem e um SHA‑256 da concatenação dos hashes binários dos blocos de até 1 MiB. O arquivo tem limites de 16 MiB para o manifesto e 256 MiB por imagem. A verificação usa fatias binárias, sem decodificar fotos, e o backup inclui somente os registros e imagens necessários para montagens e recortes salvos.
+
+Uma transação de leitura obtém um estado consistente para exportação. Os ativos antigos armazenados em `assets` ganham referências na representação do backup. Ao restaurar, o editor valida estrutura, referências, cabeçalhos de imagem e somas de verificação antes de comparar os dados. As assinaturas incluem os registros editáveis completos com chaves ordenadas, a ordem das camadas e os hashes da foto, do recorte e da máscara. IDs, datas da biblioteca e miniaturas ficam fora da assinatura. As referências são comparadas pelo conteúdo das imagens.
+
+A restauração grava apenas itens novos, reaproveita mídias compartilhadas equivalentes e remapeia os IDs que colidem com dados diferentes. Cada gravação de montagens ou recortes atualiza a revisão local na tabela `imports` do banco v3. Depois de comparar o conteúdo fora do IndexedDB, a transação de importação verifica a revisão e repete a comparação se outra aba tiver alterado os dados. Isso preserva a atomicidade sem manter a transação aberta durante o cálculo dos hashes. O formato v1 continua compatível com backups anteriores. A estimativa de cota é consultada no painel e antes da restauração.
 
 ## Offline
 

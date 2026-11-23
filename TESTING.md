@@ -25,14 +25,15 @@ O Playwright usa o Chrome instalado no caminho padrão do Windows, quando encont
 | Sombras | Ajuste ao vivo, diferença entre ambiente e contato, rotação, persistência após reabrir e comparação de pixels na prévia, PNG e JPEG |
 | Duplicação de montagens | Banco v1 preparado antes de abrir a PWA, duplicação offline de duas camadas com sombras, edição, renomeação, reabertura e exclusão da cópia |
 | Meus Recortes | Grade e toque a 360 px em modo offline, prévia PNG com alfa, renomeação, reutilização na mesma e em outra montagem, exportação após exclusão da biblioteca e liberação das imagens ao apagar a última montagem |
+| Backup e restauração | Exportação e restauração offline a 360 px, migração v2, conteúdo idêntico com IDs diferentes, versões modificadas, referências compartilhadas, importação repetida e simultânea, arquivos inválidos e rollback após falha de quota simulada |
 | Falha e compatibilidade no Chrome | Orientação JPEG/EXIF, troca de fundo, tentativa sem modelo e sem rede, alternativa manual e compartilhamento simulado |
 | Contorno na resolução original | Foto de 2.600 × 1.000 px com textura clara e estampa azul, contorno côncavo desenhado com mouse e zoom/pan em DPR 2, pixels opacos intactos na estampa, transparência nas áreas externas, antialiasing no PNG e alternância do fundo de prévia |
 
-As suítes usam imagens de teste geradas no navegador e a fotografia CC0 distribuída com o editor. O seletor de câmera é exercitado com arquivo de teste. A simulação de Web Share verifica o arquivo e a ativação por clique.
+As suítes usam imagens geradas no navegador, a fotografia CC0 `test-fixtures/mobilesam-sala-cc0.jpg` e a foto original da almofada. A imagem CC0 funciona como referência fixa para o teste do MobileSAM offline. O seletor de câmera é exercitado com arquivo de teste. A simulação de Web Share verifica o arquivo e a ativação por clique.
 
 ## Resultado da verificação
 
-Passaram o lint, os 17 testes de lógica e os 9 fluxos Playwright da PWA. Os builds de produção e PWA foram gerados com sucesso. O teste da foto original inclui toques negativos consecutivos, uma remoção proposital na estampa, a recuperação com **Manter** no mesmo ponto e a confirmação de que repetir o toque dá feedback sem duplicar a indicação. O teste conferiu igualdade RGBA nos três peixes e no tecido, além de alfa zero em cinco amostras da palha. O PNG salvo pelo editor foi inspecionado e está em `.tmp/mobilesam-acceptance/editor-recorte.png`.
+Passaram o lint, os 22 testes de lógica e os 11 fluxos Playwright da PWA. Os builds de produção e PWA foram gerados com sucesso. O teste da foto original inclui toques negativos consecutivos, uma remoção proposital na estampa, a recuperação com **Manter** no mesmo ponto e a confirmação de que repetir o toque dá feedback sem duplicar a indicação. O teste conferiu igualdade RGBA nos três peixes e no tecido, além de alfa zero em cinco amostras da palha. A inspeção visual da rodada de segmentação está registrada no PNG `.tmp/mobilesam-acceptance/editor-recorte.png`.
 
 O benchmark usa o Worker compilado da PWA, força cada backend e executa ambos no Chrome com a mesma foto e as mesmas indicações. Mede preparação em localhost, primeira codificação, primeira decodificação e decodificação após corrigir os pontos. Os comparativos e o JSON ficam em `.tmp/mobilesam-benchmark/` para a foto CC0 do editor e em `.tmp/mobilesam-acceptance/` para a foto original.
 
@@ -71,3 +72,9 @@ A foto original fica em `test-fixtures/almofada-peixes.jpeg` e é usada localmen
 2. Ao terminar um recorte, escolha **Salvar em Meus Recortes**. Nomeie o item e abra a biblioteca pela tela inicial para verificar a miniatura e a transparência.
 3. Abra uma montagem e use **Adicionar objeto → Meus Recortes** duas vezes. Mova apenas uma das camadas. Salve, repita em outra montagem, exclua o item da biblioteca e exporte ambas.
 4. Na PWA, aguarde **Offline pronto**, desligue a conexão e repita a duplicação, a consulta à biblioteca e a exportação depois de reabrir o aplicativo.
+
+## Testar backup e restauração
+
+1. Aguarde **Offline pronto**, desligue a conexão e abra **Backup e Restauração** na tela inicial. Exporte uma montagem salva que use um item de **Meus Recortes**.
+2. Importe o arquivo no mesmo navegador e confirme. Confira que os itens já salvos aparecem como ignorados e que as quantidades permanecem iguais ao repetir a importação.
+3. Altere e salve a sombra de uma montagem. Importe o backup original novamente e verifique que as duas versões aparecem, cada uma com seus ajustes. Abra a versão restaurada e verifique camadas, transparência e edição da máscara.

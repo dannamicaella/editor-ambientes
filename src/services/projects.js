@@ -1,11 +1,14 @@
+import { projectAssetIds } from '../composables/projectModel.js'
+
 let opening
 
 const projectStores = ['summaries', 'projects', 'assets', 'media', 'cutouts']
+const contentRevision = 'content-revision'
 
 function database() {
   if (!opening) {
     opening = new Promise((resolve, reject) => {
-      const request = indexedDB.open('editor-de-ambientes', 2)
+      const request = indexedDB.open('editor-de-ambientes', 3)
       let blocked = false
       request.onupgradeneeded = ({ oldVersion }) => {
         const db = request.result
@@ -15,9 +18,12 @@ function database() {
           const assets = db.createObjectStore('assets', { keyPath: ['projectId', 'id'] })
           assets.createIndex('projectId', 'projectId')
         }
-        request.transaction.objectStore('assets').createIndex('sharedId', 'sharedId')
-        db.createObjectStore('media', { keyPath: 'id' })
-        db.createObjectStore('cutouts', { keyPath: 'id' }).createIndex('assetId', 'assetId')
+        if (oldVersion < 2) {
+          request.transaction.objectStore('assets').createIndex('sharedId', 'sharedId')
+          db.createObjectStore('media', { keyPath: 'id' })
+          db.createObjectStore('cutouts', { keyPath: 'id' }).createIndex('assetId', 'assetId')
+        }
+        db.createObjectStore('imports', { keyPath: 'id' })
       }
       request.onerror = () => reject(request.error)
       request.onblocked = () => {
@@ -71,6 +77,18 @@ function read(store, id) {
   return resultOf(store.get(id))
 }
 
+function touchContent(get) {
+  return resultOf(get('imports').put({ id: contentRevision, token: crypto.randomUUID() }))
+}
+
+function writeContent(stores, work) {
+  return inTransaction([...stores, 'imports'], 'readwrite', async (get) => {
+    const value = await work(get)
+    await touchContent(get)
+    return value
+  })
+}
+
 async function ensureMedia(store, asset) {
   if (await resultOf(store.getKey(asset.id)) === undefined) await resultOf(store.add(asset))
 }
@@ -122,7 +140,7 @@ export function openProject(id) {
 }
 
 export function saveProject(project, assets, thumbnail) {
-  return inTransaction(projectStores, 'readwrite', async (get) => {
+  return writeContent(projectStores, async (get) => {
     const { id } = project
     const store = get('assets')
     const existing = await ownedAssets(store, id)
@@ -143,7 +161,7 @@ export function saveProject(project, assets, thumbnail) {
 export const PROJECT_NAME_LIMIT = 80
 
 export function duplicateProject(id, newId = crypto.randomUUID()) {
-  return inTransaction(projectStores, 'readwrite', async (get) => {
+  return writeContent(projectStores, async (get) => {
     const projects = get('projects')
     const assets = get('assets')
     const [copy, summary, entries] = await Promise.all([
@@ -169,7 +187,7 @@ export function duplicateProject(id, newId = crypto.randomUUID()) {
 }
 
 export function renameProject(id, name) {
-  return inTransaction(['projects', 'summaries'], 'readwrite', async (get) => {
+  return writeContent(['projects', 'summaries'], async (get) => {
     const [project, summary] = await Promise.all([requireProject(get('projects'), id), read(get('summaries'), id)])
     await Promise.all([
       resultOf(get('projects').put({ ...project, name })),
@@ -179,7 +197,7 @@ export function renameProject(id, name) {
 }
 
 export function deleteProject(id) {
-  return inTransaction(projectStores, 'readwrite', async (get) => {
+  return writeContent(projectStores, async (get) => {
     const assets = get('assets')
     const entries = await ownedAssets(assets, id)
     await Promise.all([
@@ -213,7 +231,7 @@ export function openCutout(id) {
 }
 
 export function saveCutout(asset, name, thumbnail) {
-  return inTransaction(['cutouts', 'media'], 'readwrite', async (get) => {
+  return writeContent(['cutouts', 'media'], async (get) => {
     const entry = { id: crypto.randomUUID(), assetId: asset.id, name, thumbnail, createdAt: Date.now() }
     await ensureMedia(get('media'), asset)
     await resultOf(get('cutouts').add(entry))
@@ -222,7 +240,7 @@ export function saveCutout(asset, name, thumbnail) {
 }
 
 export function renameCutout(id, name) {
-  return inTransaction(['cutouts'], 'readwrite', async (get) => {
+  return writeContent(['cutouts'], async (get) => {
     const store = get('cutouts')
     const entry = await requireCutout(store, id)
     await resultOf(store.put({ ...entry, name }))
@@ -230,7 +248,7 @@ export function renameCutout(id, name) {
 }
 
 export function deleteCutout(id) {
-  return inTransaction(['cutouts', 'media', 'assets'], 'readwrite', async (get) => {
+  return writeContent(['cutouts', 'media', 'assets'], async (get) => {
     const store = get('cutouts')
     const entry = await requireCutout(store, id)
     await resultOf(store.delete(id))
@@ -238,6 +256,121 @@ export function deleteCutout(id) {
   })
 }
 
+export function readBackupSnapshot() {
+  return inTransaction([...projectStores, 'imports'], 'readonly', async (get) => {
+    const [projects, summaries, entries, media, cutouts, revision] = await Promise.all([
+      ...['projects', 'summaries', 'assets', 'media', 'cutouts'].map((name) => resultOf(get(name).getAll())),
+      read(get('imports'), contentRevision),
+    ])
+    const byId = new Map(media.map((asset) => [asset.id, asset]))
+    const used = new Map()
+    const byProject = new Map()
+    for (const entry of entries) {
+      if (!byProject.has(entry.projectId)) byProject.set(entry.projectId, new Map())
+      byProject.get(entry.projectId).set(entry.id, entry)
+    }
+    function use(id) {
+      const asset = byId.get(id)
+      if (!asset) throw new Error('Uma imagem necessária está indisponível. O backup não foi gerado.')
+      used.set(id, asset)
+      return id
+    }
+    let legacy = 0
+    function resolve(entry) {
+      if (!entry) throw new Error('Uma montagem tem uma referência de imagem incompleta.')
+      if (entry.sharedId) return use(entry.sharedId)
+      let id
+      do { id = 'legacy-' + ++legacy } while (byId.has(id))
+      used.set(id, { ...inlineAsset(entry), id })
+      return id
+    }
+    const summaryById = new Map(summaries.map((summary) => [summary.id, summary]))
+    const groups = projects.map((project) => {
+      const own = byProject.get(project.id)
+      const ids = new Map([...projectAssetIds(project)].map((id) => [id, resolve(own?.get(id))]))
+      const summary = summaryById.get(project.id)
+      return {
+        project: remapProject(project, project.id, ids),
+        summary: { ...projectSummary(project, summary?.thumbnail), updatedAt: summary?.updatedAt ?? 0 },
+      }
+    })
+    for (const { assetId } of cutouts) use(assetId)
+    return { groups, media: [...used.values()], cutouts, revision: revision?.token, sharedMediaIds: new Set(byId.keys()) }
+  })
+}
+
+function remapProject(project, id, mediaIds) {
+  return {
+    ...project, id, backgroundId: mediaIds.get(project.backgroundId),
+    layers: project.layers.map((layer) => ({ ...layer, assetId: mediaIds.get(layer.assetId) })),
+  }
+}
+
+function claimIds(records, reserved) {
+  const occupied = new Set(reserved)
+  const unavailable = new Set([...occupied, ...records.map(({ id }) => id)])
+  const ids = new Map()
+  let conflicts = 0
+  for (const { id } of records) {
+    let next = id
+    if (occupied.has(next)) {
+      do { next = crypto.randomUUID() } while (unavailable.has(next))
+      unavailable.add(next)
+      conflicts++
+    }
+    ids.set(id, next)
+  }
+  return { ids, conflicts }
+}
+
+function commitBackupMerge(plan, revision) {
+  return inTransaction([...projectStores, 'imports'], 'readwrite', async (get) => {
+    const current = await read(get('imports'), contentRevision)
+    if (current?.token !== revision) return
+    const { groups, cutouts, media, reused, pending, ignoredProjects, ignoredCutouts } = plan
+    const result = { projects: groups.length, cutouts: cutouts.length, ignoredProjects, ignoredCutouts, conflicts: 0 }
+    if (!groups.length && !cutouts.length) return result
+
+    const [projectKeys, summaryKeys, assetKeys, mediaKeys, cutoutKeys] = await Promise.all(
+      projectStores.map((name) => resultOf(get(name).getAllKeys())),
+    )
+    const projects = claimIds(groups.map(({ project }) => project), [...projectKeys, ...summaryKeys])
+    const images = claimIds(media, [...mediaKeys, ...assetKeys.map(([, id]) => id)])
+    const records = claimIds(cutouts, cutoutKeys)
+    const imageIds = new Map(reused)
+    for (const [id, representative] of pending) imageIds.set(id, images.ids.get(representative))
+
+    for (const asset of media) {
+      await resultOf(get('media').add({ ...asset, id: imageIds.get(asset.id) }))
+    }
+    for (const record of cutouts) {
+      await resultOf(get('cutouts').add({ ...record, id: records.ids.get(record.id), assetId: imageIds.get(record.assetId) }))
+    }
+    for (const { project, summary } of groups) {
+      const id = projects.ids.get(project.id)
+      const restored = remapProject(project, id, imageIds)
+      await resultOf(get('projects').add(restored))
+      await resultOf(get('summaries').add({ ...summary, id }))
+      for (const assetId of projectAssetIds(restored)) {
+        await resultOf(get('assets').add({ projectId: id, id: assetId, sharedId: assetId }))
+      }
+    }
+    await touchContent(get)
+    return { ...result, conflicts: projects.conflicts + records.conflicts + images.conflicts }
+  })
+}
+
+export async function restoreBackupSnapshot(snapshot) {
+  const { contentFingerprints, planBackupMerge } = await import('./backupContent.js')
+  const incoming = await contentFingerprints(snapshot)
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const local = await readBackupSnapshot()
+    const plan = planBackupMerge(snapshot, incoming, await contentFingerprints(local), local.sharedMediaIds)
+    const result = await commitBackupMerge(plan, local.revision)
+    if (result) return result
+  }
+  throw new Error('Os dados locais mudaram durante a comparação. Selecione o backup novamente para restaurar.')
+}
 export function storageError(error) {
   if (error?.name === 'QuotaExceededError') return 'Falta espaço no armazenamento. Libere espaço no dispositivo e tente salvar novamente.'
   if (error?.name === 'SecurityError') return 'O navegador bloqueou o armazenamento local. Confira as permissões deste site.'

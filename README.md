@@ -42,6 +42,12 @@ Abra o endereço exibido pelo Vite, normalmente `http://127.0.0.1:5173/`. A prim
 
 Selecione o objeto, marque **Aplicar sombra** e abra **Ajustar sombras**. Comece com **Sombra automática**. Regule a opacidade e o desfoque da sombra ambiente e a intensidade da sombra de contato. A cor e os deslocamentos X e Y afetam ambas. Os ajustes acompanham a posição, escala e rotação e ficam salvos na montagem e visíveis no PNG ou JPEG exportado.
 
+### Backup e Restauração
+
+Abra **Backup e Restauração** na tela inicial e escolha **Exportar backup**. Guarde o arquivo `.eabackup` fora dos dados do navegador. Ele contém as montagens salvas, a biblioteca e as imagens necessárias para continuar editando.
+
+Para recuperar os dados, escolha **Importar backup**, selecione o arquivo e confirme. A restauração adiciona itens novos e versões com conteúdo diferente. Montagens e recortes idênticos são ignorados mesmo quando têm IDs diferentes. O resumo informa quantos itens foram adicionados e ignorados. O editor avisa se o espaço estimado for insuficiente. Na PWA, a operação pode ser feita offline após aparecer **Offline pronto**.
+
 ## Testar e instalar no Android
 
 1. Execute `npm run build:pwa` e `npm run preview -- --mode pwa`.

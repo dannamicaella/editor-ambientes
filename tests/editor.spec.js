@@ -318,7 +318,7 @@ test('MobileSAM separa uma almofada fotografada e reutiliza o modelo offline', a
   await expect(page.getByRole('button', { name: 'Offline pronto' })).toBeVisible()
   expect(network.some(({ url }) => url.includes('/ai/'))).toBe(false)
   const background = await imageFile(page, 'background')
-  const buffer = await readFile(new URL('../src/assets/ambiente.jpg', import.meta.url))
+  const buffer = await readFile(new URL('../test-fixtures/mobilesam-sala-cc0.jpg', import.meta.url))
   const file = { name: 'Almofada fotografada.jpg', mimeType: 'image/jpeg', buffer }
   const dimensions = [960, 1280]
 
