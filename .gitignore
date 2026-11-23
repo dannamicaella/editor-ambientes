@@ -1,0 +1,14 @@
+node_modules/
+dist/
+dist-pwa/
+test-results/
+playwright-report/
+.npm-cache/
+.tmp/
+
+# Configuracoes locais e segredos
+.env
+.env.*
+!.env.example
+!.env.sample
+*.local

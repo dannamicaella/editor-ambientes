@@ -1,0 +1,24 @@
+{
+  "sourceCommit": "f706ad9c4eb7f219c00d9050e46328518ffb65d2",
+  "license": "Apache-2.0",
+  "files": {
+    "encoder.onnx": {
+      "bytes": 27969728,
+      "sha256": "e9af33ed26e7d014c2c83ed88ecf998ec48709beb57d6efa1a65fbec5f943058",
+      "parts": [
+        {
+          "name": "encoder.onnx.part1",
+          "bytes": 16777216
+        },
+        {
+          "name": "encoder.onnx.part2",
+          "bytes": 11192512
+        }
+      ]
+    },
+    "decoder.onnx": {
+      "bytes": 16492407,
+      "sha256": "6874832eb41d6b385dfc017872aa5020e25b90a21f00db87c49a9ee14a5e0d5e"
+    }
+  }
+}
