@@ -332,6 +332,113 @@ function keepObjectComponents(mask, side, width, height, indices, points) {
   )
 }
 
+// Remove narrow background attachments from the displayed contour only.
+// The raw model logits and interactive refinement remain unchanged.
+function cleanContourMask(logits, side, width, height) {
+  const count = width * height
+  if (count < 100) return logits
+
+  const inside = new Uint8Array(side * side)
+  const eroded = new Uint8Array(side * side)
+  const opened = new Uint8Array(side * side)
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const index = y * side + x
+      inside[index] = logits[index] > 0 ? 1 : 0
+    }
+  }
+
+  // A two-pixel-radius opening breaks thin bridges to background fragments.
+  const radius = 2
+  for (let y = radius; y < height - radius; y++) {
+    for (let x = radius; x < width - radius; x++) {
+      let complete = true
+      for (let dy = -radius; dy <= radius && complete; dy++) {
+        for (let dx = -radius; dx <= radius; dx++) {
+          if (dx * dx + dy * dy > radius * radius) continue
+          if (!inside[(y + dy) * side + x + dx]) {
+            complete = false
+            break
+          }
+        }
+      }
+      if (complete) eroded[y * side + x] = 1
+    }
+  }
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      let filled = false
+      for (let dy = -radius; dy <= radius && !filled; dy++) {
+        const ny = y + dy
+        if (ny < 0 || ny >= height) continue
+        for (let dx = -radius; dx <= radius; dx++) {
+          const nx = x + dx
+          if (nx < 0 || nx >= width || dx * dx + dy * dy > radius * radius) continue
+          if (eroded[ny * side + nx]) {
+            filled = true
+            break
+          }
+        }
+      }
+      if (filled) opened[y * side + x] = 1
+    }
+  }
+
+  // Retain the largest connected area after narrow bridges are removed.
+  const seen = new Uint8Array(side * side)
+  const queue = new Int32Array(side * side)
+  let largest = []
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const start = y * side + x
+      if (!opened[start] || seen[start]) continue
+      const component = []
+      let head = 0
+      let tail = 0
+      queue[tail++] = start
+      seen[start] = 1
+      while (head < tail) {
+        const index = queue[head++]
+        component.push(index)
+        const cx = index % side
+        const cy = Math.floor(index / side)
+        for (const next of [
+          cx > 0 ? index - 1 : -1,
+          cx + 1 < width ? index + 1 : -1,
+          cy > 0 ? index - side : -1,
+          cy + 1 < height ? index + side : -1,
+        ]) {
+          if (next < 0 || seen[next] || !opened[next]) continue
+          seen[next] = 1
+          queue[tail++] = next
+        }
+      }
+      if (component.length > largest.length) largest = component
+    }
+  }
+
+  // If the opening removes too much, keep the original segmentation.
+  let originalCount = 0
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) originalCount += inside[y * side + x]
+  }
+  if (!originalCount || largest.length < originalCount * 0.65) return logits
+
+  const cleaned = Float32Array.from(logits)
+  const keep = new Uint8Array(side * side)
+  for (const index of largest) keep[index] = 1
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const index = y * side + x
+      if (!keep[index]) cleaned[index] = -Math.max(0.5, Math.abs(cleaned[index]))
+      else cleaned[index] = Math.max(0.5, cleaned[index])
+    }
+  }
+  return cleaned
+}
+
 // Smooth only the contour input, leaving AI mask selection unchanged.
 function smoothContourLogits(logits, side, width, height) {
   const output = new Float32Array(logits)
@@ -374,8 +481,11 @@ export function maskPolygons(
   const validWidth = Math.ceil(size.width * side / SAM_SIZE)
   const validHeight = Math.ceil(size.height * side / SAM_SIZE)
 
-  const smoothLogits = smoothContourLogits(
+  const cleanedLogits = cleanContourMask(
     logits, side, validWidth, validHeight,
+  )
+  const smoothLogits = smoothContourLogits(
+    cleanedLogits, side, validWidth, validHeight,
   )
 
   const vertex = (x, y) => {
