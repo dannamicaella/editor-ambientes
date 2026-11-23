@@ -363,6 +363,27 @@ function reportProgress(progress) {
   percent.value = progress.step === 'download' ? Math.round(100 * progress.loaded / progress.total) : null
 }
 
+// A guia limita a máscara final; o modelo continua responsável pelo contorno interno.
+// Aplicar no canvas da máscara preserva o recorte em resolução original.
+function maskInsideGuide(polygons, guide) {
+  const mask = polygonMask(frame, polygons)
+  if (!guide || guide.length < 3) return mask
+
+  const context = context2d(mask.canvas)
+  context.save()
+  context.globalCompositeOperation = 'destination-in'
+  context.beginPath()
+  guide.forEach(({ x, y }, index) => {
+    if (index === 0) context.moveTo(x - mask.x, y - mask.y)
+    else context.lineTo(x - mask.x, y - mask.y)
+  })
+  context.closePath()
+  context.fillStyle = '#000'
+  context.fill()
+  context.restore()
+  return mask
+}
+
 function applyResult(result, task) {
   const { logits, side, imageSize, region, backend } = result
   let selected = 0
@@ -412,7 +433,7 @@ function applyResult(result, task) {
   }
   console.log('DIAGNOSTICO MOBILE SAM:', diagnostic)
   diagnosticText.value = JSON.stringify(diagnostic, null, 2)
-  history.setBase(() => polygonMask(frame, polygons), phase.value !== 'mask')
+  history.setBase(() => maskInsideGuide(polygons, task.guide), phase.value !== 'mask')
   if (task.label && accepted) {
     const before = accepted.result
     const sameRegion = ['x', 'y', 'width', 'height'].every((key) => result.region[key] === before.region[key])
@@ -441,7 +462,7 @@ function applyResult(result, task) {
 async function infer(label) {
   if (!validSelection.value || (busy.value && !running) || pointers.size) return
   const box = boxPrompt()
-  requested = { points: prompts.value, undo: promptUndo.value, box, label, key: JSON.stringify([box, prompts.value]) }
+  requested = { points: prompts.value, undo: promptUndo.value, box, guide: validContour.value ? points.value.map(({ x, y }) => ({ x, y })) : null, label, key: JSON.stringify([box, prompts.value]) }
   if (running) return
   running = true
   busy.value = 'Preparando a IA local…'
