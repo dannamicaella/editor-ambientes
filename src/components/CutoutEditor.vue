@@ -354,47 +354,87 @@ function boxPrompt() {
   return { x: x / frame.width, y: y / frame.height, right: (x + width) / frame.width, bottom: (y + height) / frame.height }
 }
 
-// A guia fornece exemplos do objeto e do fundo ao MobileSAM.
-// O centro é uma indicação positiva; os cantos da caixa da guia são
-// indicações negativas, desde que não coincidam com pontos do usuário.
-// A guia continua sendo o limite máximo aplicado em maskInsideGuide().
+// Verifica se um ponto normalizado está dentro do contorno desenhado.
+function insideGuide(x, y) {
+  const guide = points.value
+  let inside = false
+  for (let i = 0, j = guide.length - 1; i < guide.length; j = i++) {
+    const ax = guide[i].x / frame.width
+    const ay = guide[i].y / frame.height
+    const bx = guide[j].x / frame.width
+    const by = guide[j].y / frame.height
+    if ((ay > y) !== (by > y) && x < (bx - ax) * (y - ay) / (by - ay) + ax) inside = !inside
+  }
+  return inside
+}
+
+// Distância normalizada de um ponto ao traçado, útil para evitar
+// indicações automáticas sobre a borda do objeto.
+function guideDistance(x, y) {
+  const guide = points.value
+  let nearest = Infinity
+  for (let i = 0; i < guide.length; i++) {
+    const a = guide[i]
+    const b = guide[(i + 1) % guide.length]
+    const ax = a.x / frame.width
+    const ay = a.y / frame.height
+    const dx = (b.x - a.x) / frame.width
+    const dy = (b.y - a.y) / frame.height
+    const t = clamp(((x - ax) * dx + (y - ay) * dy) / (dx * dx + dy * dy || 1), 0, 1)
+    nearest = Math.min(nearest, Math.hypot(x - ax - t * dx, y - ay - t * dy))
+  }
+  return nearest
+}
+
+// A guia é uma região aproximada, não uma máscara perfeita. O MobileSAM
+// recebe um ponto dentro dela e exemplos de fundo FORA do contorno.
 function guidePrompts(box, userPrompts) {
   if (!box || !validContour.value) return userPrompts
 
   const generated = []
-  const cx = (box.x + box.right) / 2
-  const cy = (box.y + box.bottom) / 2
   const width = box.right - box.x
   const height = box.bottom - box.y
+  const scale = Math.max(0.001, Math.min(width, height))
+  const hasPositive = userPrompts.some((point) => point.type === 'positive')
 
-  // Respeita o ponto Manter escolhido manualmente, quando existir.
-  if (!userPrompts.some((point) => point.type === 'positive')) {
-    generated.push({ x: cx, y: cy, type: 'positive' })
+  // Escolhe um ponto realmente interno e afastado das bordas da guia.
+  if (!hasPositive) {
+    let best = null
+    for (let iy = 1; iy <= 9; iy++) {
+      for (let ix = 1; ix <= 9; ix++) {
+        const x = box.x + width * ix / 10
+        const y = box.y + height * iy / 10
+        if (!insideGuide(x, y)) continue
+        const distance = guideDistance(x, y)
+        if (!best || distance > best.distance) best = { x, y, distance }
+      }
+    }
+    if (best) generated.push({ x: best.x, y: best.y, type: 'positive' })
   }
 
-  // Os cantos costumam representar fundo quando a guia envolve um objeto.
-  // Recuamos 3% para evitar pontos exatamente na borda da imagem.
-  const insetX = width * 0.03
-  const insetY = height * 0.03
-  const corners = [
-    [box.x + insetX, box.y + insetY],
-    [box.right - insetX, box.y + insetY],
-    [box.right - insetX, box.bottom - insetY],
-    [box.x + insetX, box.bottom - insetY],
+  // Amostras de fundo próximas à guia, mas estritamente fora dela.
+  // Nunca adiciona pontos negativos dentro da área que a pessoa desenhou.
+  const margin = Math.max(0.015, scale * 0.12)
+  const candidates = [
+    [box.x - margin, (box.y + box.bottom) / 2],
+    [box.right + margin, (box.y + box.bottom) / 2],
+    [(box.x + box.right) / 2, box.y - margin],
+    [(box.x + box.right) / 2, box.bottom + margin],
+    [box.x - margin, box.y - margin],
+    [box.right + margin, box.y - margin],
+    [box.right + margin, box.bottom + margin],
+    [box.x - margin, box.bottom + margin],
   ]
 
-  for (const [x, y] of corners) {
-    const nearUserPoint = userPrompts.some((point) =>
-      Math.hypot((point.x - x) / Math.max(width, 0.001),
-        (point.y - y) / Math.max(height, 0.001)) < 0.12)
-    if (!nearUserPoint && Math.hypot((x - cx) / width, (y - cy) / height) > 0.3) {
-      generated.push({ x, y, type: 'negative' })
-    }
+  for (const [x, y] of candidates) {
+    if (x <= 0 || x >= 1 || y <= 0 || y >= 1 || insideGuide(x, y)) continue
+    if (guideDistance(x, y) < margin * 0.5) continue
+    if (userPrompts.some((point) => Math.hypot(point.x - x, point.y - y) < margin)) continue
+    generated.push({ x, y, type: 'negative' })
   }
 
-  // Os pontos do usuário vêm por último, para preservar o índice da
-  // correção mais recente utilizado pelo worker.
-  return [...generated, ...userPrompts].slice(-16)
+  // Mantém as indicações do usuário no fim, inclusive para o refinamento.
+  return [...generated.slice(0, Math.max(0, 16 - userPrompts.length)), ...userPrompts].slice(-16)
 }
 
 function reportProgress(progress) {
@@ -696,3 +736,4 @@ async function confirm(saveInLibrary = false) {
     </footer>
   </main>
 </template>
+
