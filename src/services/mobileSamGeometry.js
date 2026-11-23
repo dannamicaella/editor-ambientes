@@ -193,6 +193,9 @@ export function selectMask(
   const indices = points.map((point) =>
     promptIndex(point, side, size, validWidth, validHeight),
   )
+  // Match the component lookup for an initial single click. Interpolation can cross
+  // a cell boundary and penalize the whole object in favor of a local detail.
+  const initialPositive = !box && !previous && !correction && points.length === 1 && points[0].type === 'positive'
 
   let best
 
@@ -247,7 +250,8 @@ export function selectMask(
     let correctionSatisfied = !correction
 
     points.forEach(({ type }, index) => {
-      const satisfied = (samLogitAt(mask, side, size, points[index]) > 0) === (type === 'positive')
+      const value = initialPositive ? mask[indices[index]] : samLogitAt(mask, side, size, points[index])
+      const satisfied = (value > 0) === (type === 'positive')
 
       if (index === latest) correctionSatisfied = satisfied
 

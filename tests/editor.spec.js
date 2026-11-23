@@ -383,6 +383,35 @@ test('MobileSAM separa uma almofada fotografada e reutiliza o modelo offline', a
     url.startsWith(baseURL + '/') && method === 'GET')).toBe(true)
 })
 
+test('um toque Manter sem guia seleciona a almofada inteira em tela móvel', async ({ browser, baseURL }) => {
+  test.setTimeout(120_000)
+  const context = await browser.newContext({ baseURL, viewport: { width: 360, height: 800 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2 })
+  try {
+    const page = await context.newPage()
+    await page.goto('/')
+    await page.getByRole('button', { name: 'Nova montagem', exact: true }).click()
+    await upload(page, await imageFile(page, 'background'))
+    const canvas = await addObject(page, {
+      name: 'Almofada dos três peixes.jpeg', mimeType: 'image/jpeg',
+      buffer: await readFile(new URL('../test-fixtures/almofada-peixes.jpeg', import.meta.url)),
+    }, false)
+    const dimensions = [900, 1600]
+    await touchGesture(page, [[imagePoint(await canvas.boundingBox(), 430, 936, ...dimensions)]])
+    await page.getByRole('button', { name: 'Remover fundo' }).click()
+    await expect(page.getByText(/Recorte por IA ·/)).toBeVisible({ timeout: 85_000 })
+    await page.getByRole('button', { name: 'Fundo sólido' }).click()
+    await page.getByRole('button', { name: 'Apagar', exact: true }).click()
+    const rect = await canvas.boundingBox()
+    const matte = [38, 55, 69, 255]
+    for (const [x, y] of [[619, 726], [490, 866], [601, 1054], [430, 1220]]) {
+      await expect.poll(() => pixelAt(canvas, imagePoint(rect, x, y, ...dimensions))).not.toEqual(matte)
+    }
+    await expect.poll(() => pixelAt(canvas, imagePoint(rect, 460, 420, ...dimensions))).toEqual(matte)
+  } finally {
+    await context.close()
+  }
+})
+
 test('aceitação da almofada dos três peixes preserva o tecido e deixa a palha transparente', async ({ page }, testInfo) => {
   const photo = new URL('../test-fixtures/almofada-peixes.jpeg', import.meta.url)
   test.skip(!existsSync(photo), 'Foto original de aceitação ausente.')

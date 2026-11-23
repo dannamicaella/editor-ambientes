@@ -36,6 +36,25 @@ test('prefere a máscara que respeita os cliques mesmo com um escore inicial men
   assert.equal(best[15], -1)
 })
 
+test('um único Manter preserva o objeto quando a interpolação do toque oscila na borda da célula', () => {
+  const side = 8
+  const area = side * side
+  const logits = new Float32Array(2 * area).fill(-10)
+  for (let y = 1; y <= 6; y++) {
+    for (let x = 1; x <= 6; x++) logits[y * side + x] = 2
+  }
+  logits[area + 4 * side] = 2
+  logits[area + 4 * side + 1] = 2
+  const size = { width: 1024, height: 1024 }
+  const point = { x: 1.05 / side, y: 4.5 / side, type: 'positive' }
+  assert(samLogitAt(logits.subarray(0, area), side, size, point) < 0)
+  const result = selectMask(logits, [0.95, 0.8], side, [point], undefined, size)
+  const alpha = samAlpha(result.logits, side, size, { width: 320, height: 320 })
+  assert.equal(result.candidate, 0)
+  assert.equal(result.logits.filter((value) => value > 0).length, 36)
+  assert.equal(alphaAt(alpha, 175, 175), 255)
+})
+
 test('usa margem no contorno guia e projeta a máscara de volta ao local exato da foto', () => {
   const region = guidedRegion(1000, 1000, { x: 0.3, y: 0.3, right: 0.7, bottom: 0.7 })
   const { points } = relativePrompts([{ x: 0.5, y: 0.5, type: 'positive' }, { x: 0, y: 0, type: 'negative' }], undefined, region)
