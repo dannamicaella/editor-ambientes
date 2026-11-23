@@ -30,7 +30,6 @@ const feedback = ref('')
 const promptUndo = shallowRef([])
 const variant = ref('contour')
 const inference = shallowRef()
-const diagnosticText = ref('')
 const aiCached = ref(false)
 const percent = ref(null)
 const showOriginal = ref(false)
@@ -373,21 +372,6 @@ function applyResult(result, task) {
   }
 
   history.setBase(() => modelMask(frame, result), phase.value !== 'mask')
-  const { x, y, width, height } = history.mask
-  diagnosticText.value = JSON.stringify({
-    backend: result.backend,
-    maskAlternatives: result.diagnostics ?? [],
-    selectedAlternative: result.selectedCandidate ?? null,
-    prompts: task.points,
-    guideBox: task.box ?? null,
-    viewport: { width: size.width, height: size.height, ratio: size.ratio, zoom: zoom.value },
-    frame,
-    image: { width: image.width, height: image.height },
-    imageSize: result.imageSize,
-    region: result.region,
-    maskSide: result.side,
-    rasterBounds: { x, y, width, height },
-  }, null, 2)
   if (task.label && accepted) {
     const before = accepted.result
     const sameRegion = ['x', 'y', 'width', 'height'].every((key) => result.region[key] === before.region[key])
@@ -459,7 +443,6 @@ function selectMode(useManual, reset = false) {
     segmenter?.dispose()
     segmenter = undefined
     inference.value = undefined
-    diagnosticText.value = ''
     aiCached.value = false
     accepted = undefined
     maskSnapshots.clear()
@@ -543,10 +526,6 @@ async function confirm(saveInLibrary = false) {
     </div>
 
     <footer class="cutout-controls">
-      <details v-if="diagnosticText" style="width: 100%; padding: 8px; border: 1px solid #aab5aa; border-radius: 8px;">
-        <summary style="cursor: pointer; font-weight: 600;">Diagnóstico da IA (temporário)</summary>
-        <pre style="white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; user-select: text;">{{ diagnosticText }}</pre>
-      </details>
       <p v-if="message" class="inline-warning" role="status">{{ message }}</p>
       <div v-if="canPrompt" class="cutout-tools">
         <div class="tool-group" aria-label="Indicações para a IA">
