@@ -30,6 +30,7 @@ const feedback = ref('')
 const promptUndo = shallowRef([])
 const variant = ref('contour')
 const inference = shallowRef()
+const diagnosticText = ref('')
 const aiCached = ref(false)
 const percent = ref(null)
 const showOriginal = ref(false)
@@ -363,6 +364,41 @@ function reportProgress(progress) {
 }
 
 function applyResult(result, task) {
+    const { logits, side, imageSize, region, backend } = result
+
+  let selected = 0
+  let minX = side
+  let minY = side
+  let maxX = -1
+  let maxY = -1
+
+  for (let y = 0; y < side; y++) {
+    for (let x = 0; x < side; x++) {
+      if (logits[y * side + x] <= 0) continue
+
+      selected++
+      minX = Math.min(minX, x)
+      minY = Math.min(minY, y)
+      maxX = Math.max(maxX, x)
+      maxY = Math.max(maxY, y)
+    }
+  }
+
+  const diagnostic = {
+    backend,
+    frame,
+    image: { width: image.width, height: image.height },
+    imageSize,
+    region,
+    maskSide: side,
+    selectedPixels: selected,
+    maskBounds: selected
+      ? { minX, minY, maxX, maxY }
+      : null,
+  }
+
+  console.log('DIAGNOSTICO MOBILE SAM:', diagnostic)
+  window.__samDiagnostic = diagnostic
   const polygons = maskPolygons(result.logits, result.side, result.imageSize, frame, result.region)
   history.setBase(() => polygonMask(frame, polygons), phase.value !== 'mask')
   if (task.label && accepted) {
