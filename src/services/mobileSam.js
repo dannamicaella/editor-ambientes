@@ -10,7 +10,7 @@ export function createMobileSam(image, preferred = 'auto') {
   let fullImage = false
   let closed = false
   let request = 0
-  let provider = preferred === 'auto' ? (navigator.gpu ? 'webgpu' : 'wasm') : preferred
+  let provider = "wasm"
 
   function terminate() {
     worker?.terminate()
