@@ -596,6 +596,115 @@ test('alternar marcadores no celular preserva a máscara, as indicações e o hi
   }
 })
 
+test.describe('mensagens de correção do recorte', () => {
+  test.use({ viewport: { width: 360, height: 800 }, isMobile: true, hasTouch: true })
+
+  async function openFeedbackCutout(page) {
+    await page.addInitScript(() => {
+      const BrowserWorker = window.Worker
+      window.Worker = class {
+        constructor(url, options) {
+          if (!String(url).includes('mobileSam.worker')) return new BrowserWorker(url, options)
+        }
+
+        postMessage({ request, bitmap, refining, negativePass }) {
+          bitmap?.close()
+          const complete = (correctionSatisfied) => {
+            const side = 64
+            const logits = Float32Array.from({ length: side * side }, (_, index) => index % side < 38 + request ? 4 : -4)
+            const result = negativePass ? { candidates: [], usesPrevious: false } : {
+              region: { x: 0, y: 0, width: 1, height: 1 }, imageSize: { width: 1024, height: 819 },
+              side, logits, raw: logits, backend: 'wasm', assets: [], correctionSatisfied,
+            }
+            this.onmessage({ data: { request, result } })
+          }
+          if (refining) {
+            window.completeFeedbackCorrection = complete
+            this.onmessage({ data: { request, progress: { step: 'decode' } } })
+          } else queueMicrotask(() => complete(true))
+        }
+
+        terminate() {}
+      }
+    })
+    await page.goto('/')
+    const button = (name) => page.getByRole('button', { name, exact: true })
+    await button('Nova montagem').tap()
+    await upload(page, await imageFile(page, 'background'))
+    const canvas = await addObject(page, await imageFile(page, 'object'), false)
+    const touchImage = async (x, y) => touchGesture(page, [[imagePoint(await canvas.boundingBox(), x, y)]])
+    await touchImage(120, 120)
+    await button('Remover fundo').tap()
+    await expect(page.getByText(/Recorte por IA ·/)).toBeVisible()
+    const time = Date.now()
+    await page.clock.install({ time })
+    await page.clock.pauseAt(time + 10_000)
+    const progress = page.getByRole('status').filter({ hasText: 'Separando o objeto…' })
+    return {
+      button, progress,
+      startCorrection: async (x, y) => {
+        await touchImage(x, y)
+        await expect(progress).toBeVisible()
+      },
+      finishCorrection: async (satisfied) => {
+        await page.evaluate((satisfied) => window.completeFeedbackCorrection(satisfied), satisfied)
+        await expect(progress).toHaveCount(0)
+      },
+    }
+  }
+
+  test('expira sucessos em 2 s e falhas em 4 s, com prazo próprio para cada resultado', async ({ page }) => {
+    const { button, startCorrection, finishCorrection } = await openFeedbackCutout(page)
+    const success = button('Recorte atualizado.')
+    const failure = button('A IA não conseguiu excluir essa área. O recorte anterior foi mantido.')
+
+    await startCorrection(145, 100)
+    await finishCorrection(true)
+    await page.clock.runFor(1_999)
+    await expect(success).toBeVisible()
+    await page.clock.runFor(1)
+    await expect(success).toHaveCount(0)
+
+    await startCorrection(160, 115)
+    await finishCorrection(true)
+    await page.clock.runFor(1_000)
+    await expect(success).toBeVisible()
+    await button('Remover').tap()
+    await startCorrection(220, 145)
+    await finishCorrection(false)
+    await expect(success).toHaveCount(0)
+    await page.clock.runFor(3_999)
+    await expect(failure).toBeVisible()
+    await page.clock.runFor(1)
+    await expect(failure).toHaveCount(0)
+  })
+
+  test('dispensa resultados por toque e ao ocultar marcadores, preservando o processamento', async ({ page }) => {
+    const { button, progress, startCorrection, finishCorrection } = await openFeedbackCutout(page)
+    const markers = button('Exibir marcadores')
+    const success = button('Recorte atualizado.')
+    const failure = button('A IA não conseguiu incluir essa área. O recorte anterior foi mantido.')
+
+    await startCorrection(145, 100)
+    await markers.tap()
+    await expect(markers).toHaveAttribute('aria-pressed', 'false')
+    await page.clock.runFor(5_000)
+    await expect(progress).toBeVisible()
+    await finishCorrection(true)
+    await success.tap()
+    await expect(success).toHaveCount(0)
+
+    await startCorrection(160, 115)
+    await finishCorrection(false)
+    await markers.tap()
+    await expect(markers).toHaveAttribute('aria-pressed', 'true')
+    await expect(failure).toBeVisible()
+    await markers.tap()
+    await expect(markers).toHaveAttribute('aria-pressed', 'false')
+    await expect(failure).toHaveCount(0)
+  })
+})
+
 test('aceitação da almofada dos três peixes preserva o tecido e deixa a palha transparente', async ({ page }, testInfo) => {
   const photo = new URL('../test-fixtures/almofada-peixes.jpeg', import.meta.url)
   test.skip(!existsSync(photo), 'Foto original de aceitação ausente.')

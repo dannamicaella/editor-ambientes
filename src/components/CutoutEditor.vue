@@ -28,6 +28,8 @@ const showMarkers = ref(true)
 const busy = ref('')
 const message = ref('')
 const feedback = ref('')
+const feedbackDuration = { success: 2_000, failure: 4_000, notice: 4_000 }
+let feedbackTimer
 const promptUndo = shallowRef([])
 const variant = ref('contour')
 const inference = shallowRef()
@@ -84,6 +86,7 @@ async function restorePrevious() {
 }
 onBeforeUnmount(() => {
   disposed = true
+  clearTimeout(feedbackTimer)
   segmenter?.dispose()
   history.dispose()
   releaseImage(maskedPreview)
@@ -202,6 +205,23 @@ watch([phase, points, prompts, zoom, tool, brush, solid, showOriginal, showMarke
 watch(history.canUndo, markMask)
 watch(history.canRedo, markMask)
 
+function dismissFeedback() {
+  clearTimeout(feedbackTimer)
+  feedbackTimer = undefined
+  feedback.value = ''
+}
+
+function showFeedback(text, type) {
+  clearTimeout(feedbackTimer)
+  feedback.value = text
+  feedbackTimer = setTimeout(dismissFeedback, feedbackDuration[type])
+}
+
+function toggleMarkers() {
+  showMarkers.value = !showMarkers.value
+  if (!showMarkers.value) dismissFeedback()
+}
+
 function adjustZoom(value, anchor = { x: size.width / 2, y: size.height / 2 }) {
   const next = clamp(Number(value), 1, 6)
   const ratio = next / zoom.value
@@ -303,12 +323,12 @@ function end(event, canceled = false) {
       const label = gesture.label
       const next = updatePrompt(prompts.value, { x: selected.x / frame.width, y: selected.y / frame.height, type: label }, frame)
       if (next === prompts.value) {
-        feedback.value = 'Já existe uma indicação igual aqui. Experimente tocar em outra região.'
+        showFeedback('Já existe uma indicação igual aqui. Experimente tocar em outra região.', 'notice')
       } else if (next.length <= 16) {
         promptUndo.value = [...promptUndo.value.slice(-15), prompts.value]
         prompts.value = next
         message.value = ''
-        feedback.value = ''
+        dismissFeedback()
         if (phase.value === 'mask') infer(label)
       } else message.value = 'Limite de 16 indicações. Remova uma indicação ou corrija com o pincel.'
     }
@@ -366,20 +386,20 @@ function reportProgress(progress) {
 function applyResult(result, task) {
   if (task.label && accepted && !result.correctionSatisfied) {
     showOriginal.value = false
-    feedback.value = task.label === 'positive'
+    showFeedback(task.label === 'positive'
       ? 'A IA não conseguiu incluir essa área. O recorte anterior foi mantido.'
-      : 'A IA não conseguiu excluir essa área. O recorte anterior foi mantido.'
+      : 'A IA não conseguiu excluir essa área. O recorte anterior foi mantido.', 'failure')
     return
   }
 
   history.setBase(() => modelMask(frame, result), phase.value !== 'mask')
   if (task.label === 'negative' && accepted) {
-    feedback.value = 'Recorte atualizado.'
+    showFeedback('Recorte atualizado.', 'success')
   } else if (task.label && accepted) {
     const before = accepted.result
     const sameRegion = ['x', 'y', 'width', 'height'].every((key) => result.region[key] === before.region[key])
     const changed = !sameRegion || result.logits.some((value, index) => (value > 0) !== (before.logits[index] > 0))
-    feedback.value = changed ? 'Recorte atualizado.' : 'Essa área já está como indicada.'
+    showFeedback(changed ? 'Recorte atualizado.' : 'Essa área já está como indicada.', 'success')
   }
   accepted = { ...task, result }
   manualAvailable.value = false
@@ -447,7 +467,7 @@ async function infer(label) {
           prompts.value = accepted.points
           promptUndo.value = accepted.undo
           showOriginal.value = false
-          feedback.value = 'A IA não conseguiu excluir essa área. O recorte anterior foi mantido.'
+          showFeedback('A IA não conseguiu excluir essa área. O recorte anterior foi mantido.', 'failure')
           markMask()
         }
       } catch (error) {
@@ -475,7 +495,7 @@ function removePrompt() {
   if (!canUndoPrompt.value || busy.value) return
   prompts.value = promptUndo.value.at(-1)
   promptUndo.value = promptUndo.value.slice(0, -1)
-  feedback.value = ''
+  dismissFeedback()
   if (phase.value === 'mask' && validSelection.value) infer()
 }
 
@@ -502,7 +522,7 @@ function selectMode(useManual, reset = false) {
   tool.value = useManual ? 'lasso' : 'positive'
   showOriginal.value = false
   message.value = ''
-  feedback.value = ''
+  dismissFeedback()
   manualAvailable.value = false
 }
 
@@ -564,7 +584,9 @@ async function confirm(saveInLibrary = false) {
         <progress v-if="percent !== null" :value="percent" max="100" aria-label="Carregamento da IA local"></progress>
       </div>
       <span class="canvas-tag">{{ Math.round(zoom * 100) }}%</span>
-      <p v-if="feedback" class="cutout-feedback" role="status">{{ feedback }}</p>
+      <div role="status">
+        <button v-if="feedback" type="button" class="cutout-feedback" title="Dispensar mensagem" @click="dismissFeedback">{{ feedback }}</button>
+      </div>
     </div>
 
     <footer class="cutout-controls">
@@ -579,7 +601,7 @@ async function confirm(saveInLibrary = false) {
         </div>
         <div class="tool-group">
           <QBtn flat round aria-label="Exibir marcadores" :aria-pressed="showMarkers"
-            :title="showMarkers ? 'Ocultar marcadores' : 'Mostrar marcadores'" @click="showMarkers = !showMarkers">
+            :title="showMarkers ? 'Ocultar marcadores' : 'Mostrar marcadores'" @click="toggleMarkers">
             <Eye v-if="showMarkers" :size="18" aria-hidden="true" />
             <EyeOff v-else :size="18" aria-hidden="true" />
           </QBtn>
