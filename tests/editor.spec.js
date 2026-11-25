@@ -515,6 +515,87 @@ test('Remover tenta de novo com os mesmos pontos e verifica o alfa após Restaur
   await expect.poll(() => pixelAt(canvas, residue)).toEqual(matte)
 })
 
+test('alternar marcadores no celular preserva a máscara, as indicações e o histórico', async ({ browser, baseURL }) => {
+  const context = await browser.newContext({ baseURL, viewport: { width: 320, height: 700 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2 })
+  try {
+    const page = await context.newPage()
+    await page.addInitScript(() => {
+      const BrowserWorker = window.Worker
+      window.markerTestPredictions = []
+      window.Worker = class {
+        constructor(url, options) {
+          if (!String(url).includes('mobileSam.worker')) return new BrowserWorker(url, options)
+        }
+
+        postMessage({ request, bitmap, points }) {
+          bitmap?.close()
+          window.markerTestPredictions.push(points)
+          const side = 64
+          const logits = Float32Array.from({ length: side * side }, (_, index) => index % side < 40 ? 4 : -4)
+          const result = {
+            region: { x: 0, y: 0, width: 1, height: 1 }, imageSize: { width: 1024, height: 819 },
+            side, logits, raw: logits, backend: 'wasm', assets: [],
+          }
+          queueMicrotask(() => this.onmessage({ data: { request, result } }))
+        }
+
+        terminate() {}
+      }
+    })
+    await page.goto('/')
+    await page.getByRole('button', { name: 'Nova montagem', exact: true }).click()
+    await upload(page, await imageFile(page, 'background'))
+    const canvas = await addObject(page, await imageFile(page, 'object'), false)
+    const button = (name) => page.getByRole('button', { name, exact: true })
+    const markers = button('Exibir marcadores')
+    const touchImage = async (x, y) => touchGesture(page, [[imagePoint(await canvas.boundingBox(), x, y)]])
+    const preview = () => canvas.evaluate((element) => new Promise((resolve) => {
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve(element.toDataURL())))
+    }))
+    const predictions = () => page.evaluate(() => window.markerTestPredictions)
+
+    await expect(markers).toHaveAttribute('aria-pressed', 'true')
+    await touchImage(120, 120)
+    await button('Remover').tap()
+    await touchImage(240, 170)
+    await button('Remover fundo').tap()
+    await expect(page.getByText(/Recorte por IA ·/)).toBeVisible()
+    const initialPredictions = await predictions()
+    expect(initialPredictions.map((points) => points.map(({ type }) => type))).toEqual([['positive', 'negative']])
+
+    await button('Apagar').tap()
+    await touchImage(85, 80)
+    const undoBrush = button('Desfazer pincelada')
+    const undoPrompt = button('Desfazer indicação')
+    await expect(undoBrush).toBeEnabled()
+    const maskPreview = await preview()
+    await button('Remover').tap()
+    const markedPreview = await preview()
+    expect(markedPreview).not.toEqual(maskPreview)
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(320)
+
+    await markers.tap()
+    await expect(markers).toHaveAttribute('aria-pressed', 'false')
+    expect(await preview()).toEqual(maskPreview)
+    await expect(button('Remover')).toHaveAttribute('aria-pressed', 'true')
+    await expect(undoBrush).toBeEnabled()
+    await expect(undoPrompt).toBeEnabled()
+    await markers.tap()
+    await expect(markers).toHaveAttribute('aria-pressed', 'true')
+    expect(await preview()).toEqual(markedPreview)
+    expect(await predictions()).toEqual(initialPredictions)
+
+    await button('Manter').tap()
+    await touchImage(170, 145)
+    await expect.poll(async () => (await predictions()).length).toBe(2)
+    const [, nextPrompts] = await predictions()
+    expect(nextPrompts).toHaveLength(3)
+    expect(nextPrompts.slice(0, 2)).toEqual(initialPredictions[0])
+  } finally {
+    await context.close()
+  }
+})
+
 test('aceitação da almofada dos três peixes preserva o tecido e deixa a palha transparente', async ({ page }, testInfo) => {
   const photo = new URL('../test-fixtures/almofada-peixes.jpeg', import.meta.url)
   test.skip(!existsSync(photo), 'Foto original de aceitação ausente.')

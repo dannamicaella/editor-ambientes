@@ -1,7 +1,7 @@
 <script setup>
 import { computed, onBeforeUnmount, ref, shallowRef, watch } from 'vue'
 import { QBtn, QSpinner } from 'quasar'
-import { Check, Eraser, Hand, Lasso, Minus, Paintbrush, Plus, Redo2, RotateCcw, Scissors, Sparkles, Undo2, X, ZoomIn } from '@lucide/vue'
+import { Check, Eraser, Eye, EyeOff, Hand, Lasso, Minus, Paintbrush, Plus, Redo2, RotateCcw, Scissors, Sparkles, Undo2, X, ZoomIn } from '@lucide/vue'
 import { useCanvasViewport } from '../composables/useCanvasViewport.js'
 import { useMaskHistory } from '../composables/useMaskHistory.js'
 import { context2d, createCanvas, decodeImage, releaseImage } from '../services/images.js'
@@ -24,6 +24,7 @@ const brush = ref(Math.max(32, Math.round(Math.min(frame.width, frame.height) * 
 const brushMax = Math.max(200, Math.round(Math.min(frame.width, frame.height) * 0.12))
 const points = ref([])
 const prompts = ref([])
+const showMarkers = ref(true)
 const busy = ref('')
 const message = ref('')
 const feedback = ref('')
@@ -153,7 +154,7 @@ function draw(canvas) {
       context.stroke()
     }
   }
-  if (canPrompt.value && tool.value !== 'erase' && tool.value !== 'restore') {
+  if (showMarkers.value && canPrompt.value && tool.value !== 'erase' && tool.value !== 'restore') {
     for (const { x, y, type } of prompts.value) {
       drawPrompt(context, x * box.width, y * box.height, type === 'positive')
     }
@@ -197,7 +198,7 @@ function markMask() {
   refresh()
 }
 
-watch([phase, points, prompts, zoom, tool, brush, solid, showOriginal], refresh)
+watch([phase, points, prompts, zoom, tool, brush, solid, showOriginal, showMarkers], refresh)
 watch(history.canUndo, markMask)
 watch(history.canRedo, markMask)
 
@@ -576,10 +577,17 @@ async function confirm(saveInLibrary = false) {
           <QBtn v-if="promptUndo.length" flat round aria-label="Desfazer indicação" title="Desfazer indicação"
             :disable="!!busy || !canUndoPrompt" @click="removePrompt"><Undo2 :size="18" /></QBtn>
         </div>
-        <QBtn v-if="phase === 'mask'" flat no-caps class="btn" :aria-pressed="showOriginal"
-          @click="showOriginal = !showOriginal; if (showOriginal && ['erase', 'restore'].includes(tool)) tool = 'positive'">
-          {{ showOriginal ? 'Ver recorte' : 'Ver foto' }}
-        </QBtn>
+        <div class="tool-group">
+          <QBtn flat round aria-label="Exibir marcadores" :aria-pressed="showMarkers"
+            :title="showMarkers ? 'Ocultar marcadores' : 'Mostrar marcadores'" @click="showMarkers = !showMarkers">
+            <Eye v-if="showMarkers" :size="18" aria-hidden="true" />
+            <EyeOff v-else :size="18" aria-hidden="true" />
+          </QBtn>
+          <QBtn v-if="phase === 'mask'" flat no-caps class="btn" :aria-pressed="showOriginal"
+            @click="showOriginal = !showOriginal; if (showOriginal && ['erase', 'restore'].includes(tool)) tool = 'positive'">
+            {{ showOriginal ? 'Ver recorte' : 'Ver foto' }}
+          </QBtn>
+        </div>
       </div>
       <div class="cutout-tools">
         <div class="tool-group" aria-label="Ferramentas do recorte">
